@@ -100,8 +100,10 @@ BASELINE_FILE = "baseline.json"
 LOG_FILE      = "trader.log"
 
 # ── 대시보드 ───────────────────────────────────────
-DASHBOARD_PASSWORD = env_str("DASHBOARD_PASSWORD", "")
-DASHBOARD_PORT     = env_int("DASHBOARD_PORT", 8501)
+DASHBOARD_PASSWORD     = env_str("DASHBOARD_PASSWORD", "")
+DASHBOARD_PORT         = env_int("DASHBOARD_PORT", 8501)
+DASHBOARD_REFRESH_SEC  = env_int("DASHBOARD_REFRESH_SEC", 60)
+DASHBOARD_CACHE_TTL_SEC = env_int("DASHBOARD_CACHE_TTL_SEC", 60)
 
 
 def validate():

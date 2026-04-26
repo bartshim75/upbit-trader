@@ -60,7 +60,7 @@ def _read_json(path: str) -> Optional[dict]:
         return None
 
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
 def load_trades_df() -> pd.DataFrame:
     if not os.path.exists(config.TRADES_FILE):
         return pd.DataFrame()
@@ -83,7 +83,7 @@ def load_trades_df() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
 def load_market_snapshot():
     """현재가 + 250봉 캔들 + 지표"""
     cur = api.get_current_price(config.TICKER)
@@ -91,7 +91,7 @@ def load_market_snapshot():
     return cur, df
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
 def load_balances():
     upbit = api.get_upbit_client()
     krw = api.get_krw_balance(upbit)
@@ -353,7 +353,7 @@ def main():
     if not auth_gate():
         return
 
-    st_autorefresh(interval=30_000, key="auto_refresh")
+    st_autorefresh(interval=config.DASHBOARD_REFRESH_SEC * 1000, key="auto_refresh")
 
     # 헤더
     cols = st.columns([4, 1])
