@@ -3,9 +3,13 @@ config.py — 전체 설정값 로드
 .env 파일에서 읽어오며, 코드에 API 키를 절대 하드코딩하지 않습니다.
 """
 import os
+from datetime import timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── 타임존 (모든 시각 기록/표시는 KST 기준) ───────────
+KST = timezone(timedelta(hours=9))
 
 
 # ── 환경변수 파서 (inline 주석/공백 안전 처리) ─────

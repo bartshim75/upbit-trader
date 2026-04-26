@@ -153,7 +153,7 @@ def _execute_buy(upbit, ticker: str, current_price: float,
     position = {
         "ticker":            ticker,
         "entry_price":       exec_price,
-        "entry_time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "entry_time":        datetime.now(config.KST).strftime("%Y-%m-%d %H:%M:%S"),
         "initial_volume":    volume_purchased,
         "remaining_volume":  volume_purchased,
         "entry_atr":         entry_atr,

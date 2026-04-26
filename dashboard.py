@@ -16,7 +16,7 @@ dashboard.py — Streamlit 기반 자동매매 모니터링 대시보드
 """
 import os
 import json
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 import streamlit as st
@@ -279,7 +279,7 @@ def render_charts(trades_df: pd.DataFrame):
 
     # 일별 손익 (최근 30일)
     sells["날짜"] = sells["날짜시간_dt"].dt.date
-    end = date.today()
+    end = datetime.now(config.KST).date()
     start = end - timedelta(days=29)
     daily = sells.groupby("날짜")["손익_숫자"].sum().reindex(
         [start + timedelta(days=i) for i in range(30)], fill_value=0
@@ -358,7 +358,7 @@ def main():
     # 헤더
     cols = st.columns([4, 1])
     cols[0].title("🤖 업비트 자동매매 대시보드")
-    cols[1].caption(f"마지막 갱신: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    cols[1].caption(f"마지막 갱신: {datetime.now(config.KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
     # 데이터 로드
     status   = _read_json(config.STATUS_FILE) or {}

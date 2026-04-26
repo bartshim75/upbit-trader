@@ -21,6 +21,7 @@ def get_logger(name: str) -> logging.Logger:
         "[%(asctime)s] %(levelname)s %(name)s — %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    formatter.converter = lambda *_: datetime.now(config.KST).timetuple()
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     logger.addHandler(ch)
@@ -62,7 +63,7 @@ def record_buy(ticker: str, price: float, volume: float, amount_krw: float, reas
                rsi: float = 0, atr: float = 0, stop_loss: float = 0):
     _ensure_csv()
     row = {
-        "날짜시간":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "날짜시간":     datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
         "종류":         "매수",
         "티커":         ticker,
         "매수가(원)":   _fmt(price),
@@ -92,7 +93,7 @@ def record_sell(ticker: str, buy_price: float, sell_price: float,
     _ensure_csv()
     sign = "+" if pnl >= 0 else ""
     row = {
-        "날짜시간":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "날짜시간":     datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
         "종류":         "매도",
         "티커":         ticker,
         "매수가(원)":   _fmt(buy_price),

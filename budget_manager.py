@@ -7,7 +7,7 @@ budget_manager.py — 예산 / 일일 리스크 / 포지션 상태 관리
 """
 import json
 import os
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
 import config
 from logger import get_logger
@@ -16,7 +16,7 @@ log = get_logger(__name__)
 
 
 def _today_str() -> str:
-    return date.today().isoformat()
+    return datetime.now(config.KST).date().isoformat()
 
 
 class BudgetManager:
@@ -50,8 +50,8 @@ class BudgetManager:
             "트레일링매도횟수": 0,
             "추세이탈매도횟수": 0,
             "승률":             0.0,
-            "시작일":           datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "최종업데이트":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "시작일":           datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
+            "최종업데이트":     datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
             "일일":             self._empty_daily(),
         }
 
@@ -72,7 +72,7 @@ class BudgetManager:
             self.save_status()
 
     def save_status(self):
-        self.status["최종업데이트"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.status["최종업데이트"] = datetime.now(config.KST).strftime("%Y-%m-%d %H:%M")
         with open(self.status_file, "w", encoding="utf-8") as f:
             json.dump(self.status, f, ensure_ascii=False, indent=2)
 
@@ -196,7 +196,7 @@ class BudgetManager:
     def save_baseline(self, volume: float, note: str = ""):
         data = {
             "volume": float(volume),
-            "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "recorded_at": datetime.now(config.KST).strftime("%Y-%m-%d %H:%M:%S"),
             "note": note,
         }
         with open(self.baseline_file, "w", encoding="utf-8") as f:
