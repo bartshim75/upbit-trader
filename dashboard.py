@@ -341,6 +341,15 @@ def main():
         layout="wide",
     )
 
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMetricValue"] { font-size: 1.6rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if not auth_gate():
         return
 
