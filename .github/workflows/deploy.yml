@@ -1,0 +1,37 @@
+name: GCP VM 자동 배포
+
+on:
+  push:
+    branches:
+      - main   # main 브랜치에 push될 때만 배포
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: GCP VM에 SSH 배포
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.GCP_VM_IP }}
+          username: ${{ secrets.GCP_VM_USER }}
+          key:      ${{ secrets.GCP_VM_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/upbit-trader
+
+            echo "📥 최신 코드 받기..."
+            git pull origin main
+
+            echo "📦 패키지 업데이트..."
+            source venv/bin/activate
+            pip install -r requirements.txt --quiet
+
+            echo "🔄 서비스 재시작..."
+            sudo systemctl restart upbit-trader
+
+            echo "✅ 배포 완료!"
+            sudo systemctl status upbit-trader --no-pager
