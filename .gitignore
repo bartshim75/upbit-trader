@@ -1,9 +1,11 @@
 # API 키 — 절대 GitHub에 올리면 안 됨!
 .env
 
-# 거래 기록 (로컬 보관)
+# 거래 기록 / 상태 파일 (로컬 보관)
 trades.csv
 status.json
+position.json
+baseline.json
 trader.log
 
 # Python

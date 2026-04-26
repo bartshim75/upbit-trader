@@ -23,6 +23,7 @@ class BudgetManager:
     def __init__(self):
         self.status_file   = config.STATUS_FILE
         self.position_file = config.POSITION_FILE
+        self.baseline_file = config.BASELINE_FILE
         self.status = self._load_status()
         self._reset_daily_if_new_day()
 
@@ -177,6 +178,50 @@ class BudgetManager:
         if halt and not self.status["일일"]["거래중단"]:
             self.halt_trading(halt)
         return pnl
+
+    # ── 사용자 기존 보유분 (baseline) 보호 ────────────
+    def load_baseline(self) -> Optional[dict]:
+        """
+        baseline.json: {"volume": 0.001, "recorded_at": "...", "note": "..."}
+        없으면 None.
+        """
+        if not os.path.exists(self.baseline_file):
+            return None
+        try:
+            with open(self.baseline_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def save_baseline(self, volume: float, note: str = ""):
+        data = {
+            "volume": float(volume),
+            "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "note": note,
+        }
+        with open(self.baseline_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        log.info(f"📌 baseline 기록: {volume:.8f} ({note})")
+
+    def baseline_volume(self) -> float:
+        b = self.load_baseline()
+        return float(b["volume"]) if b else 0.0
+
+    def ensure_baseline(self, current_exchange_volume: float):
+        """
+        최초 1회: baseline.json이 없으면 현재 거래소 잔고를 baseline으로 기록.
+        이후 봇은 이 baseline 이상으로만 매도 가능 (기존 자산 보호).
+        """
+        if self.load_baseline() is not None:
+            return
+        self.save_baseline(
+            current_exchange_volume,
+            note="자동 기록: 봇 첫 실행 시점의 사용자 보유 수량 (이 수량은 절대 매도하지 않음)",
+        )
+
+    def bot_owned_volume(self, exchange_volume: float) -> float:
+        """봇이 매도 가능한 수량 = 현재 거래소 잔고 - baseline (음수면 0)"""
+        return max(0.0, exchange_volume - self.baseline_volume())
 
     # ── 포지션 상태 영속화 ──────────────────────────
     def load_position(self) -> Optional[dict]:

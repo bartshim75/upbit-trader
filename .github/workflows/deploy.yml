@@ -30,8 +30,11 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt --quiet
 
-            echo "🔄 서비스 재시작..."
+            echo "🔄 트레이더 재시작..."
             sudo systemctl restart upbit-trader
+
+            echo "🔄 대시보드 재시작..."
+            sudo systemctl restart upbit-dashboard || echo "(대시보드 서비스 미등록 — setup.sh 재실행 필요)"
 
             echo "✅ 배포 완료!"
             sudo systemctl status upbit-trader --no-pager

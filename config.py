@@ -56,7 +56,12 @@ API_ERROR_LIMIT = int(os.getenv("API_ERROR_LIMIT", 3))              # 연속 API
 TRADES_FILE   = "trades.csv"
 STATUS_FILE   = "status.json"
 POSITION_FILE = "position.json"
+BASELINE_FILE = "baseline.json"   # 사용자 기존 보유 수량 (봇이 절대 건드리지 않음)
 LOG_FILE      = "trader.log"
+
+# ── 대시보드 ───────────────────────────────────────
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+DASHBOARD_PORT     = int(os.getenv("DASHBOARD_PORT", 8501))
 
 
 def validate():

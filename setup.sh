@@ -24,12 +24,12 @@ if [ ! -f .env ]; then
     cp .env.example .env
     echo ""
     echo "⚠️  .env 파일이 생성되었습니다."
-    echo "    아래 명령어로 API 키를 입력해주세요:"
+    echo "    아래 명령어로 API 키 / 대시보드 비밀번호를 입력해주세요:"
     echo "    nano .env"
     echo ""
 fi
 
-# 5. systemd 서비스 등록
+# 5. systemd 서비스 등록 (트레이더)
 WORK_DIR=$(pwd)
 USER_NAME=$(whoami)
 
@@ -51,16 +51,48 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+# 6. systemd 서비스 등록 (대시보드)
+sudo tee /etc/systemd/system/upbit-dashboard.service > /dev/null <<EOF
+[Unit]
+Description=Upbit Trader Dashboard (Streamlit)
+After=network.target
+
+[Service]
+User=${USER_NAME}
+WorkingDirectory=${WORK_DIR}
+EnvironmentFile=${WORK_DIR}/.env
+ExecStart=${WORK_DIR}/venv/bin/streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 7. sudoers — 배포 스크립트가 비밀번호 없이 systemctl 재시작 가능하도록
+SUDOERS_FILE="/etc/sudoers.d/upbit-trader"
+if [ ! -f "$SUDOERS_FILE" ]; then
+    echo "${USER_NAME} ALL=(ALL) NOPASSWD: /bin/systemctl restart upbit-trader, /bin/systemctl restart upbit-dashboard, /bin/systemctl status upbit-trader, /bin/systemctl status upbit-dashboard" | sudo tee "$SUDOERS_FILE" > /dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+fi
+
 sudo systemctl daemon-reload
 sudo systemctl enable upbit-trader
+sudo systemctl enable upbit-dashboard
 
 echo ""
 echo "===================================="
 echo "  세팅 완료!"
 echo ""
 echo "  다음 단계:"
-echo "  1. nano .env  (API 키 입력)"
-echo "  2. sudo systemctl start upbit-trader  (시작)"
-echo "  3. sudo systemctl status upbit-trader (상태 확인)"
-echo "  4. journalctl -u upbit-trader -f       (로그 실시간 보기)"
+echo "  1. nano .env                                 (API 키 + DASHBOARD_PASSWORD 입력)"
+echo "  2. sudo systemctl start upbit-trader         (트레이더 시작)"
+echo "  3. sudo systemctl start upbit-dashboard      (대시보드 시작)"
+echo "  4. http://<VM_외부_IP>:8501                  (대시보드 접속)"
+echo ""
+echo "  로그 보기:"
+echo "  - journalctl -u upbit-trader -f"
+echo "  - journalctl -u upbit-dashboard -f"
 echo "===================================="
