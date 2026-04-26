@@ -5,7 +5,7 @@ strategy.py — 1시간봉 추세 눌림목 전략
   1. 현재가 > MA200                     (상승 추세)
   2. MA50 > MA200                       (중기 추세 정렬)
   3. 현재가 <= MA20 * (1 + tolerance)   (눌림목)
-  4. RSI(14) ∈ [35, 50]                 (과매도 반등 / 과열 회피)
+  4. RSI(14) ∈ [30, 55]                 (과매도 반등 / 과열 회피)
   5. 반등 캔들 (현재 종가 > 직전 고가  또는  현재 종가 > 현재 시가)
 
 매도 조건:
@@ -108,7 +108,7 @@ def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
         "추세(P>MA200)":     cond_uptrend,
         "정렬(MA50>MA200)":  cond_ma_align,
         "눌림(P≤MA20·1.005)": cond_pullback,
-        "RSI∈[35,50]":       cond_rsi,
+        f"RSI∈[{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]": cond_rsi,
         "반등캔들":           cond_rebound,
     }
 

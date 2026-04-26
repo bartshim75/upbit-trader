@@ -119,7 +119,8 @@ def fmt_won(v) -> str:
 
 
 def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
-                exchange_vol: float, krw_balance: float, current_price: float):
+                exchange_vol: float, krw_balance: float, current_price: float,
+                candles: pd.DataFrame):
     s = status or {}
     halt_status = s.get("일일", {}).get("거래중단", False)
     halt_reason = s.get("일일", {}).get("중단사유", "")
@@ -133,29 +134,42 @@ def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
 
     pos_label = "보유 중 ✅" if (position and bot_vol > 0) else "무포지션"
 
-    cols = st.columns(6)
-    cols[0].metric("배정 예산", f"{config.BUDGET:,.0f}원")
-    cols[1].metric(
+    # 현재가 — 직전 1H봉 종가 대비 변화율
+    price_delta = None
+    if not candles.empty and len(candles) >= 2 and current_price:
+        prev_close = float(candles["close"].iloc[-2])
+        if prev_close > 0:
+            price_delta = f"{(current_price/prev_close - 1)*100:+.2f}%"
+
+    cols = st.columns(7)
+    cols[0].metric(
+        f"현재가 ({config.TICKER})",
+        f"{current_price:,.0f}원" if current_price else "-",
+        price_delta,
+        help="직전 1H봉 종가 대비 변화율",
+    )
+    cols[1].metric("배정 예산", f"{config.BUDGET:,.0f}원")
+    cols[2].metric(
         "봇 운용 자산",
         f"{bot_market_value:,.0f}원",
         help="KRW 잔고 + 봇이 매수한 BTC 평가액 (사용자 baseline 분 제외)",
     )
-    cols[2].metric(
+    cols[3].metric(
         "누적 손익",
         fmt_won(cum_pnl),
         delta=f"{cum_pnl/config.BUDGET*100:+.2f}%" if config.BUDGET else None,
     )
-    cols[3].metric(
+    cols[4].metric(
         "오늘 손익",
         fmt_won(today_pnl),
         delta=f"{today_pnl/config.BUDGET*100:+.2f}%" if config.BUDGET else None,
     )
-    cols[4].metric("승률", f"{win_rate:.1f}%")
+    cols[5].metric("승률", f"{win_rate:.1f}%")
 
     if halt_status:
-        cols[5].metric("거래 상태", "⛔ 차단", help=halt_reason, delta_color="inverse")
+        cols[6].metric("거래 상태", "⛔ 차단", help=halt_reason, delta_color="inverse")
     else:
-        cols[5].metric("거래 상태", "🟢 정상" if pos_label.startswith("보유") else "🟡 대기")
+        cols[6].metric("거래 상태", "🟢 정상" if pos_label.startswith("보유") else "🟡 대기")
 
 
 def render_position_card(position: dict, current_price: float):
@@ -359,7 +373,7 @@ def main():
         krw_balance, exchange_vol = 0.0, 0.0
 
     # KPI
-    render_kpis(status, position, baseline_vol, exchange_vol, krw_balance, current_price)
+    render_kpis(status, position, baseline_vol, exchange_vol, krw_balance, current_price, candles)
 
     st.divider()
 
