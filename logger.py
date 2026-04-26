@@ -1,7 +1,7 @@
 """
 logger.py — 로그 + 거래 기록 모듈
-- trader.log: 실행 로그
-- trades.csv: 매매 내역 (매수가/매도가/손익 등 전체 기록)
+- trader.log : 실행 로그
+- trades.csv : 매매 내역 (매수/매도/손절/분할익절/트레일링)
 """
 import logging
 import csv
@@ -19,61 +19,66 @@ def get_logger(name: str) -> logging.Logger:
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "[%(asctime)s] %(levelname)s %(name)s — %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-    # 콘솔 출력
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    # 파일 출력
     fh = logging.FileHandler(config.LOG_FILE, encoding="utf-8")
     fh.setFormatter(formatter)
     logger.addHandler(fh)
-
     return logger
 
 
-# ── CSV 거래 기록 ──────────────────────────────────────────
+# ── CSV 거래 기록 ──────────────────────────────────────
 
 TRADE_HEADERS = [
     "날짜시간", "종류", "티커",
-    "매수가(원)", "매도가(원)", "수량(BTC)",
+    "매수가(원)", "매도가(원)", "수량",
     "매수금액(원)", "매도금액(원)",
     "손익(원)", "손익률(%)",
-    "사유", "MA단기", "MA장기", "RSI"
+    "사유", "MA20", "MA50", "MA200", "RSI", "ATR", "손절가",
 ]
 
 
 def _ensure_csv():
-    """trades.csv 없으면 헤더 포함하여 생성"""
     if not os.path.exists(config.TRADES_FILE):
         with open(config.TRADES_FILE, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=TRADE_HEADERS)
-            writer.writeheader()
+            csv.DictWriter(f, fieldnames=TRADE_HEADERS).writeheader()
 
 
-def record_buy(ticker: str, price: float, volume: float,
-               amount_krw: float, reason: str,
-               ma_short: float = 0, ma_long: float = 0, rsi: float = 0):
-    """매수 기록"""
+def _fmt(v, default="-"):
+    if v is None or v == "":
+        return default
+    try:
+        return f"{float(v):,.0f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def record_buy(ticker: str, price: float, volume: float, amount_krw: float, reason: str,
+               ma20: float = 0, ma50: float = 0, ma200: float = 0,
+               rsi: float = 0, atr: float = 0, stop_loss: float = 0):
     _ensure_csv()
     row = {
-        "날짜시간":    datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "종류":        "매수",
-        "티커":        ticker,
-        "매수가(원)":  f"{price:,.0f}",
-        "매도가(원)":  "-",
-        "수량(BTC)":   f"{volume:.8f}",
-        "매수금액(원)": f"{amount_krw:,.0f}",
+        "날짜시간":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "종류":         "매수",
+        "티커":         ticker,
+        "매수가(원)":   _fmt(price),
+        "매도가(원)":   "-",
+        "수량":         f"{volume:.8f}",
+        "매수금액(원)": _fmt(amount_krw),
         "매도금액(원)": "-",
-        "손익(원)":    "-",
-        "손익률(%)":   "-",
-        "사유":        reason,
-        "MA단기":      f"{ma_short:,.0f}",
-        "MA장기":      f"{ma_long:,.0f}",
-        "RSI":         f"{rsi:.1f}",
+        "손익(원)":     "-",
+        "손익률(%)":    "-",
+        "사유":         reason,
+        "MA20":         _fmt(ma20),
+        "MA50":         _fmt(ma50),
+        "MA200":        _fmt(ma200),
+        "RSI":          f"{rsi:.1f}",
+        "ATR":          _fmt(atr),
+        "손절가":       _fmt(stop_loss),
     }
     with open(config.TRADES_FILE, "a", newline="", encoding="utf-8-sig") as f:
         csv.DictWriter(f, fieldnames=TRADE_HEADERS).writerow(row)
@@ -82,25 +87,28 @@ def record_buy(ticker: str, price: float, volume: float,
 def record_sell(ticker: str, buy_price: float, sell_price: float,
                 volume: float, buy_amount: float, sell_amount: float,
                 pnl: float, pnl_pct: float, reason: str,
-                ma_short: float = 0, ma_long: float = 0, rsi: float = 0):
-    """매도 기록"""
+                ma20: float = 0, ma50: float = 0, ma200: float = 0,
+                rsi: float = 0, atr: float = 0):
     _ensure_csv()
-    pnl_sign = "+" if pnl >= 0 else ""
+    sign = "+" if pnl >= 0 else ""
     row = {
-        "날짜시간":    datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "종류":        "매도",
-        "티커":        ticker,
-        "매수가(원)":  f"{buy_price:,.0f}",
-        "매도가(원)":  f"{sell_price:,.0f}",
-        "수량(BTC)":   f"{volume:.8f}",
-        "매수금액(원)": f"{buy_amount:,.0f}",
-        "매도금액(원)": f"{sell_amount:,.0f}",
-        "손익(원)":    f"{pnl_sign}{pnl:,.0f}",
-        "손익률(%)":   f"{pnl_sign}{pnl_pct*100:.2f}%",
-        "사유":        reason,
-        "MA단기":      f"{ma_short:,.0f}",
-        "MA장기":      f"{ma_long:,.0f}",
-        "RSI":         f"{rsi:.1f}",
+        "날짜시간":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "종류":         "매도",
+        "티커":         ticker,
+        "매수가(원)":   _fmt(buy_price),
+        "매도가(원)":   _fmt(sell_price),
+        "수량":         f"{volume:.8f}",
+        "매수금액(원)": _fmt(buy_amount),
+        "매도금액(원)": _fmt(sell_amount),
+        "손익(원)":     f"{sign}{pnl:,.0f}",
+        "손익률(%)":    f"{sign}{pnl_pct*100:.2f}%",
+        "사유":         reason,
+        "MA20":         _fmt(ma20),
+        "MA50":         _fmt(ma50),
+        "MA200":        _fmt(ma200),
+        "RSI":          f"{rsi:.1f}",
+        "ATR":          _fmt(atr),
+        "손절가":       "-",
     }
     with open(config.TRADES_FILE, "a", newline="", encoding="utf-8-sig") as f:
         csv.DictWriter(f, fieldnames=TRADE_HEADERS).writerow(row)
