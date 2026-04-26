@@ -147,6 +147,36 @@ cat baseline.json
 
 ---
 
+## VM 재부팅 / 리셋 시 자동 재시작
+
+**결론: 별도 명령어 입력 불필요.** VM이 켜지면 트레이더와 대시보드가 자동으로 올라옵니다.
+
+[setup.sh](setup.sh)에서 두 가지 장치를 걸어둡니다:
+
+1. **`Restart=always` + `RestartSec=10`** — 프로세스가 죽으면 10초 후 systemd가 자동 재시작.
+2. **`systemctl enable upbit-trader upbit-dashboard`** — VM 부팅 시 systemd가 두 서비스를 자동 시작.
+
+| 상황 | 동작 |
+|------|------|
+| VM 재부팅 / 리셋 | 부팅 후 systemd가 자동 시작 ✅ |
+| 프로세스만 크래시 | 10초 후 자동 재시작 ✅ |
+| VM 자체 정지 (free tier 한도 초과 등) | VM을 다시 켜야 함 — 켜지면 자동 시작 |
+
+### 정상 작동 확인 (VM 재부팅 후)
+
+```bash
+sudo systemctl status upbit-trader
+sudo systemctl status upbit-dashboard
+```
+
+`active (running)` + `enabled` 두 가지가 모두 표시되면 OK. 만약 `disabled`면 한 번만:
+
+```bash
+sudo systemctl enable upbit-trader upbit-dashboard
+```
+
+---
+
 ## 5단계 — 모니터링 대시보드
 
 브라우저에서 거래 내역 / 손익 / 포지션을 실시간으로 확인할 수 있습니다.
