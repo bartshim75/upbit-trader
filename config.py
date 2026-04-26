@@ -7,61 +7,97 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# ── 환경변수 파서 (inline 주석/공백 안전 처리) ─────
+def _clean(v: str) -> str:
+    """값 문자열에서 inline '#' 주석과 양쪽 공백 제거."""
+    if v is None:
+        return ""
+    return v.split("#", 1)[0].strip()
+
+
+def env_str(key: str, default: str = "") -> str:
+    raw = os.getenv(key)
+    if raw is None or raw == "":
+        return default
+    return _clean(raw) or default
+
+
+def env_int(key: str, default: int) -> int:
+    v = _clean(os.getenv(key, ""))
+    if not v:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
+
+
+def env_float(key: str, default: float) -> float:
+    v = _clean(os.getenv(key, ""))
+    if not v:
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
 # ── 업비트 API ──────────────────────────────────────
-UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
-UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+UPBIT_ACCESS_KEY = env_str("UPBIT_ACCESS_KEY")
+UPBIT_SECRET_KEY = env_str("UPBIT_SECRET_KEY")
 
 # ── 거래 대상 ────────────────────────────────────────
-TICKER = os.getenv("TICKER", "KRW-BTC")
+TICKER = env_str("TICKER", "KRW-BTC")
 
 # ── 예산 / 포지션 사이징 ─────────────────────────────
-BUDGET = int(os.getenv("BUDGET", 1_000_000))            # 총 배정 예산 (원)
-POSITION_PCT = float(os.getenv("POSITION_PCT", 0.15))   # 1회 진입 = 유효예산의 15%
-MIN_ORDER_KRW = int(os.getenv("MIN_ORDER_KRW", 5_000))  # 업비트 최소 주문 금액
+BUDGET        = env_int  ("BUDGET",        1_000_000)
+POSITION_PCT  = env_float("POSITION_PCT",  0.15)
+MIN_ORDER_KRW = env_int  ("MIN_ORDER_KRW", 5_000)
 
 # ── 손절 / 익절 ──────────────────────────────────────
-MAX_STOP_LOSS = float(os.getenv("MAX_STOP_LOSS", -0.02))  # 손절 한도 -2%
-ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULT", 1.5))    # ATR * 1.5 손절 (한도 내에서)
+MAX_STOP_LOSS = env_float("MAX_STOP_LOSS", -0.02)
+ATR_STOP_MULT = env_float("ATR_STOP_MULT", 1.5)
 
-TP1_PCT   = float(os.getenv("TP1_PCT",   0.015))  # 1차 익절 +1.5%
-TP1_RATIO = float(os.getenv("TP1_RATIO", 0.50))   # 1차 매도 비율 50%
-TP2_PCT   = float(os.getenv("TP2_PCT",   0.030))  # 2차 익절 +3.0%
-TP2_RATIO = float(os.getenv("TP2_RATIO", 0.30))   # 2차 매도 비율 30%
-TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", 0.012))  # 잔여 물량 트레일링 -1.2%
+TP1_PCT   = env_float("TP1_PCT",   0.015)
+TP1_RATIO = env_float("TP1_RATIO", 0.50)
+TP2_PCT   = env_float("TP2_PCT",   0.030)
+TP2_RATIO = env_float("TP2_RATIO", 0.30)
+TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.012)
 
 # ── 일일 리스크 한도 ─────────────────────────────────
-DAILY_LOSS_LIMIT_PCT = float(os.getenv("DAILY_LOSS_LIMIT_PCT", 0.03))  # 일일 손실 -3%
-MAX_CONSECUTIVE_STOPS = int(os.getenv("MAX_CONSECUTIVE_STOPS", 3))     # 연속 손절 3회면 당일 정지
+DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
+MAX_CONSECUTIVE_STOPS = env_int  ("MAX_CONSECUTIVE_STOPS", 3)
 
 # ── 추세/지표 파라미터 (1시간봉) ───────────────────
-MA_TREND_LONG = 200   # 상승추세 필터
-MA_TREND_MID  = 50    # 추세 보조 필터, 잔여 익절 청산 기준
-MA_PULLBACK   = 20    # 눌림목 매수 기준선
-MA_PULLBACK_TOLERANCE = 0.005  # MA20 + 0.5% 이내까지 눌림 허용
+MA_TREND_LONG = 200
+MA_TREND_MID  = 50
+MA_PULLBACK   = 20
+MA_PULLBACK_TOLERANCE = 0.005
 
 RSI_PERIOD   = 14
-RSI_BUY_MIN  = 35     # 매수 RSI 하한 (너무 약한 반등 제외)
-RSI_BUY_MAX  = 50     # 매수 RSI 상한 (과열 진입 방지)
+RSI_BUY_MIN  = 35
+RSI_BUY_MAX  = 50
 
 ATR_PERIOD = 14
-VOLATILITY_HALT_MULT = 3.0  # 직전봉 변동폭이 ATR * 3 이상이면 거래 일시정지
+VOLATILITY_HALT_MULT = 3.0
 
 # ── 캔들 / API ───────────────────────────────────────
-CANDLE_UNIT = 60       # 1시간봉
-CANDLE_COUNT = 250     # MA200 계산을 위해 250봉
-SLIPPAGE_LIMIT_PCT = float(os.getenv("SLIPPAGE_LIMIT_PCT", 0.005))  # 시장가 예상 체결가 0.5% 이상 불리하면 취소
-API_ERROR_LIMIT = int(os.getenv("API_ERROR_LIMIT", 3))              # 연속 API 오류 3회면 사이클 중단
+CANDLE_UNIT  = 60
+CANDLE_COUNT = 250
+SLIPPAGE_LIMIT_PCT = env_float("SLIPPAGE_LIMIT_PCT", 0.005)
+API_ERROR_LIMIT    = env_int  ("API_ERROR_LIMIT",    3)
 
 # ── 파일 경로 ────────────────────────────────────────
 TRADES_FILE   = "trades.csv"
 STATUS_FILE   = "status.json"
 POSITION_FILE = "position.json"
-BASELINE_FILE = "baseline.json"   # 사용자 기존 보유 수량 (봇이 절대 건드리지 않음)
+BASELINE_FILE = "baseline.json"
 LOG_FILE      = "trader.log"
 
 # ── 대시보드 ───────────────────────────────────────
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
-DASHBOARD_PORT     = int(os.getenv("DASHBOARD_PORT", 8501))
+DASHBOARD_PASSWORD = env_str("DASHBOARD_PASSWORD", "")
+DASHBOARD_PORT     = env_int("DASHBOARD_PORT", 8501)
 
 
 def validate():
