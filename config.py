@@ -92,6 +92,10 @@ CANDLE_COUNT = 250
 SLIPPAGE_LIMIT_PCT = env_float("SLIPPAGE_LIMIT_PCT", 0.005)
 API_ERROR_LIMIT    = env_int  ("API_ERROR_LIMIT",    3)
 
+# ── 매매 주기 ────────────────────────────────────────
+# 매수 평가는 항상 매 정시(:00) 1회. 포지션 보유 중에만 손절/TP/트레일링을 분 단위로 추가 체크.
+EXIT_CHECK_INTERVAL_MIN = env_int("EXIT_CHECK_INTERVAL_MIN", 1)
+
 # ── 파일 경로 ────────────────────────────────────────
 TRADES_FILE   = "trades.csv"
 STATUS_FILE   = "status.json"

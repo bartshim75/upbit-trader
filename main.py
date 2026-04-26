@@ -1,13 +1,14 @@
 """
 main.py — 자동매매 진입점
-1시간마다 매매 사이클을 실행합니다.
+- 매수/매도 풀 사이클: 매 정시(:00)에 실행
+- 손절/TP/트레일링 체크: 분 단위 (포지션 보유 중일 때만 실제 동작)
 """
 import schedule
 import time
 
 import config
 from budget_manager import BudgetManager
-from trader import run_trade_cycle
+from trader import run_trade_cycle, run_exit_check
 from logger import get_logger
 
 log = get_logger("main")
@@ -18,6 +19,13 @@ def job(budget: BudgetManager):
         run_trade_cycle(budget)
     except Exception as e:
         log.error(f"❌ 매매 사이클 예외: {e}", exc_info=True)
+
+
+def exit_job(budget: BudgetManager):
+    try:
+        run_exit_check(budget)
+    except Exception as e:
+        log.error(f"❌ exit 체크 예외: {e}", exc_info=True)
 
 
 def main():
@@ -43,11 +51,12 @@ def main():
     job(budget)
 
     schedule.every().hour.at(":00").do(job, budget=budget)
-    log.info("⏰ 스케줄 등록 — 매 정시 실행")
+    schedule.every(config.EXIT_CHECK_INTERVAL_MIN).minutes.do(exit_job, budget=budget)
+    log.info(f"⏰ 스케줄 등록 — 매 정시 풀 사이클 + {config.EXIT_CHECK_INTERVAL_MIN}분마다 exit 체크")
 
     while True:
         schedule.run_pending()
-        time.sleep(30)
+        time.sleep(5)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,17 @@
 """
-trader.py — 매매 사이클 (1시간마다 실행)
+trader.py — 매매 사이클
+
+두 가지 진입점:
+  - run_trade_cycle: 매 정시(:00)에 호출. 매수/매도 모두 평가.
+  - run_exit_check : 분 단위로 호출. 포지션 보유 시에만 손절/TP/트레일링 평가
+                    (무포지션이면 즉시 리턴).
 
 원칙:
   - 사용자가 봇 시작 전부터 보유하고 있던 BTC(=baseline)는 절대 건드리지 않음
   - 봇은 자기가 매수한 수량만 추적/매도
   - 부트스트랩 로직 없음 (재시작 시 기존 잔고를 자기 포지션으로 인식하지 않음)
 
-흐름:
+run_trade_cycle 흐름:
   1) 캔들/지표 로드, 변동성 차단 체크
   2) baseline 보장 (없으면 현재 잔고로 기록)
   3) 봇 보유 포지션이 있으면 → 손절/TP1/TP2/트레일링/추세이탈 평가 → 부분/전량 매도
@@ -115,6 +120,50 @@ def run_trade_cycle(budget: BudgetManager):
     _execute_buy(upbit, ticker, current_price, sig, budget, exchange_vol)
     budget.print_status()
     log.info("━━━ 매매 사이클 종료 ━━━\n")
+
+
+# ── 분 단위 exit 체크 ───────────────────────────────
+def run_exit_check(budget: BudgetManager):
+    """
+    포지션 보유 중일 때만 손절/TP/트레일링/추세이탈을 분 단위로 평가.
+    무포지션이면 즉시 리턴 (저렴 — 파일 한 번 읽고 끝).
+    매수 평가는 절대 하지 않음 (매수는 정시 run_trade_cycle 전용).
+    """
+    position = budget.load_position()
+    if position is None:
+        return
+
+    upbit  = api.get_upbit_client()
+    ticker = config.TICKER
+
+    current_price = api.get_current_price(ticker)
+    if current_price <= 0:
+        log.warning("[exit-check] 현재가 조회 실패 — 스킵")
+        return
+
+    coin_info    = api.get_coin_balance(upbit, ticker)
+    exchange_vol = coin_info["balance"]
+    bot_vol      = budget.bot_owned_volume(exchange_vol)
+
+    if bot_vol <= 0:
+        log.warning("[exit-check] 거래소 잔고 ≤ baseline → 봇 포지션 정리")
+        budget.clear_position()
+        return
+
+    # 고점 갱신 (트레일링 스탑용)
+    if current_price > position.get("highest_price", 0):
+        position["highest_price"] = current_price
+        budget.save_position(position)
+
+    df = api.get_ohlcv(ticker, interval="minute60", count=config.CANDLE_COUNT)
+    decision = strategy.evaluate_exit(position, current_price, df)
+
+    if decision["action"] == "HOLD":
+        return  # 평상시는 로그도 안 남김 (분 단위 호출이라 로그 폭증 방지)
+
+    log.info(f"[exit-check] 현재가={current_price:,.0f} | {decision['action']} | {decision['reason']}")
+    _execute_sell(upbit, ticker, position, bot_vol, current_price, decision, budget)
+    budget.print_status()
 
 
 # ── 매수 ─────────────────────────────────────────────
