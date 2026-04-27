@@ -51,14 +51,29 @@ def auth_gate() -> bool:
 
 
 # ── 데이터 로더 (캐시) ────────────────────────────────
-def _read_json(path: str) -> Optional[dict]:
+def _read_json(path: str, label: str) -> Optional[dict]:
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+            data = json.load(f)
+    except Exception as e:
+        st.error(f"{label} 로드 실패: {e}")
+        st.stop()
+    if not isinstance(data, dict):
+        st.error(f"{label} 형식 오류: JSON 객체가 아닙니다.")
+        st.stop()
+    return data
+
+
+def _baseline_volume_or_stop(baseline: Optional[dict]) -> float:
+    if baseline is None:
+        return 0.0
+    try:
+        return float(baseline["volume"])
+    except (KeyError, TypeError, ValueError) as e:
+        st.error(f"baseline.json 형식 오류: volume 값을 읽을 수 없습니다. ({e})")
+        st.stop()
 
 
 @st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
@@ -435,10 +450,10 @@ def main():
     cols[1].caption(f"마지막 갱신: {datetime.now(config.KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
     # 데이터 로드
-    status   = _read_json(config.STATUS_FILE) or {}
-    position = _read_json(config.POSITION_FILE)
-    baseline = _read_json(config.BASELINE_FILE)
-    baseline_vol = float(baseline["volume"]) if baseline else 0.0
+    status   = _read_json(config.STATUS_FILE, "status.json") or {}
+    position = _read_json(config.POSITION_FILE, "position.json")
+    baseline = _read_json(config.BASELINE_FILE, "baseline.json")
+    baseline_vol = _baseline_volume_or_stop(baseline)
 
     trades_df = load_trades_df()
 

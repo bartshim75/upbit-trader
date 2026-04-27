@@ -272,42 +272,79 @@ def _execute_sell(upbit, ticker: str, position: dict, bot_vol: float,
         return
 
     uuid = result.get("uuid") if isinstance(result, dict) else None
+    order_info = None
     if uuid:
-        api.wait_for_fill(upbit, uuid, timeout_sec=5.0)
+        order_info = api.wait_for_fill(upbit, uuid, timeout_sec=5.0)
     else:
         time.sleep(0.8)
 
-    # 손익 계산 (체결가는 current_price로 근사)
+    fill = api.summarize_order_fill(order_info or result)
+    filled_volume = fill["executed_volume"]
+    filled_funds = fill["executed_funds"]
+
+    if fill["state"] and fill["state"] not in ("done", "cancel"):
+        log.warning(f"⚠ 주문이 아직 종료 상태가 아님: state={fill['state']} uuid={uuid}")
+
+    if filled_volume <= 0:
+        log.warning(f"⚠ 체결 수량 확인 실패/미체결 — 상태 기록 스킵 ({action}, uuid={uuid}, order={order_info or result})")
+        return
+
+    if filled_volume > safe_volume:
+        log.warning(f"⚠ 체결 수량이 요청 수량보다 큼: 체결={filled_volume:.8f}, 요청={safe_volume:.8f} → 요청 수량 기준으로 제한")
+        filled_funds *= safe_volume / filled_volume if filled_funds > 0 else 0
+        filled_volume = safe_volume
+
+    # 손익 계산은 실제 체결 수량/금액 기준. 금액이 없으면 현재가 근사로만 fallback.
     entry_price = position["entry_price"]
-    sold_volume = safe_volume
+    sold_volume = filled_volume
     buy_amount  = entry_price * sold_volume
-    sell_amount = current_price * sold_volume
+    sell_amount = filled_funds if filled_funds > 0 else current_price * sold_volume
+    sell_price  = sell_amount / sold_volume if sold_volume > 0 else current_price
     pnl         = sell_amount - buy_amount
-    pnl_pct     = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
+    pnl_pct     = (sell_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
     budget.record_sell(buy_amount, sell_amount, action)
     rec.record_sell(
-        ticker=ticker, buy_price=entry_price, sell_price=current_price,
+        ticker=ticker, buy_price=entry_price, sell_price=sell_price,
         volume=sold_volume, buy_amount=buy_amount, sell_amount=sell_amount,
         pnl=pnl, pnl_pct=pnl_pct, reason=action,
     )
     sign = "+" if pnl >= 0 else ""
-    log.info(f"✅ {action} 완료: {current_price:,.0f}원 × {sold_volume:.8f} | 손익 {sign}{pnl:,.0f}원 ({sign}{pnl_pct*100:.2f}%)")
+    log.info(f"✅ {action} 완료: {sell_price:,.0f}원 × {sold_volume:.8f} | 손익 {sign}{pnl:,.0f}원 ({sign}{pnl_pct*100:.2f}%)")
 
     # 포지션 갱신
     position["remaining_volume"] = max(0.0, position["remaining_volume"] - sold_volume)
+    position_closed = position["remaining_volume"] <= 1e-12
 
     if action == "TP1":
-        position["tp1_done"] = True
-        # 잔여물량 보호: 손절가를 본전(매수가)으로 상향
-        position["stop_loss_price"] = max(position["stop_loss_price"], entry_price)
-        budget.save_position(position)
-        log.info(f"  → TP1 후: 잔량 {position['remaining_volume']:.8f}, 손절가 본전 {entry_price:,.0f}으로 상향")
+        if position_closed:
+            budget.clear_position()
+            log.info("  → TP1 체결 후 잔량 없음: 포지션 종료")
+        elif sold_volume + 1e-12 >= target_volume:
+            position["tp1_done"] = True
+            # 잔여물량 보호: 손절가를 본전(매수가)으로 상향
+            position["stop_loss_price"] = max(position["stop_loss_price"], entry_price)
+            budget.save_position(position)
+            log.info(f"  → TP1 후: 잔량 {position['remaining_volume']:.8f}, 손절가 본전 {entry_price:,.0f}으로 상향")
+        else:
+            budget.save_position(position)
+            log.warning(f"  → TP1 부분 체결: 목표={target_volume:.8f}, 체결={sold_volume:.8f}, 잔량={position['remaining_volume']:.8f}")
     elif action == "TP2":
-        position["tp2_done"] = True
-        budget.save_position(position)
-        log.info(f"  → TP2 후: 잔량 {position['remaining_volume']:.8f} (트레일링 -{config.TRAILING_STOP_PCT*100:.1f}% 적용 중)")
+        if position_closed:
+            budget.clear_position()
+            log.info("  → TP2 체결 후 잔량 없음: 포지션 종료")
+        elif sold_volume + 1e-12 >= target_volume:
+            position["tp2_done"] = True
+            budget.save_position(position)
+            log.info(f"  → TP2 후: 잔량 {position['remaining_volume']:.8f} (트레일링 -{config.TRAILING_STOP_PCT*100:.1f}% 적용 중)")
+        else:
+            budget.save_position(position)
+            log.warning(f"  → TP2 부분 체결: 목표={target_volume:.8f}, 체결={sold_volume:.8f}, 잔량={position['remaining_volume']:.8f}")
     else:
-        # 전량 매도 → 포지션 종료
-        budget.clear_position()
-        log.info("  → 포지션 종료")
+        if position_closed:
+            # 전량 매도 → 포지션 종료
+            budget.clear_position()
+            log.info("  → 포지션 종료")
+        else:
+            budget.save_position(position)
+            log.warning(f"  → {action} 부분 체결: 잔량 {position['remaining_volume']:.8f} 유지")

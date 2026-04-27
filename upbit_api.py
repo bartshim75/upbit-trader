@@ -155,3 +155,60 @@ def wait_for_fill(upbit, uuid: str, timeout_sec: float = 5.0) -> Optional[dict]:
         time.sleep(0.4)
     log.warning(f"주문 체결 대기 시간 초과 (uuid={uuid}): last={last}")
     return last
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def summarize_order_fill(order: Optional[dict]) -> dict:
+    """
+    주문 조회 응답에서 실제 체결 수량/금액을 추출.
+    시장가 주문은 done/cancel 어느 상태에서도 체결분이 있을 수 있으므로
+    state보다 executed_volume/executed_funds를 우선 신뢰한다.
+    """
+    summary = {
+        "state": "",
+        "executed_volume": 0.0,
+        "executed_funds": 0.0,
+        "avg_price": 0.0,
+        "paid_fee": 0.0,
+        "trades_count": 0,
+    }
+    if not isinstance(order, dict):
+        return summary
+
+    summary["state"] = str(order.get("state") or "")
+    summary["executed_volume"] = _to_float(order.get("executed_volume"))
+    summary["executed_funds"] = _to_float(order.get("executed_funds"))
+    summary["paid_fee"] = _to_float(order.get("paid_fee"))
+    summary["trades_count"] = int(_to_float(order.get("trades_count"), 0.0))
+
+    trades = order.get("trades")
+    if isinstance(trades, list) and trades:
+        trade_volume = 0.0
+        trade_funds = 0.0
+        for trade in trades:
+            if not isinstance(trade, dict):
+                continue
+            volume = _to_float(trade.get("volume"))
+            funds = _to_float(trade.get("funds"))
+            if funds <= 0:
+                funds = _to_float(trade.get("price")) * volume
+            trade_volume += volume
+            trade_funds += funds
+
+        if trade_volume > 0:
+            summary["executed_volume"] = trade_volume
+        if trade_funds > 0:
+            summary["executed_funds"] = trade_funds
+
+    if summary["executed_volume"] > 0 and summary["executed_funds"] > 0:
+        summary["avg_price"] = summary["executed_funds"] / summary["executed_volume"]
+
+    return summary

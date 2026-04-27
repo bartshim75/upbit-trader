@@ -28,16 +28,7 @@ class BudgetManager:
         self._reset_daily_if_new_day()
 
     # ── 상태 로드/저장 ──────────────────────────────
-    def _load_status(self) -> dict:
-        if os.path.exists(self.status_file):
-            try:
-                with open(self.status_file, "r", encoding="utf-8") as f:
-                    s = json.load(f)
-                # 누락 필드 보강
-                s.setdefault("일일", self._empty_daily())
-                return s
-            except Exception:
-                pass
+    def _default_status(self) -> dict:
         return {
             "배정예산":         config.BUDGET,
             "누적투자금":       0,
@@ -54,6 +45,49 @@ class BudgetManager:
             "최종업데이트":     datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
             "일일":             self._empty_daily(),
         }
+
+    def _atomic_write_json(self, path: str, data: dict):
+        tmp_path = f"{path}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _load_json_or_raise(self, path: str, label: str) -> Optional[dict]:
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            log.error(f"{label} 로드 실패 — 기존 상태를 덮어쓰지 않기 위해 거래를 중단합니다: {e}", exc_info=True)
+            raise RuntimeError(f"{label} 로드 실패: {path}") from e
+        if not isinstance(data, dict):
+            log.error(f"{label} 형식 오류 — JSON 객체가 아니므로 거래를 중단합니다: {path}")
+            raise RuntimeError(f"{label} 형식 오류: {path}")
+        return data
+
+    def _load_status(self) -> dict:
+        default_status = self._default_status()
+        s = self._load_json_or_raise(self.status_file, "status.json")
+        if s is None:
+            return default_status
+
+        # 누락 필드 보강: 기존 상태값은 유지하고 새 필드만 기본값으로 채운다.
+        for key, value in default_status.items():
+            s.setdefault(key, value)
+        daily = s.setdefault("일일", self._empty_daily())
+        for key, value in self._empty_daily().items():
+            daily.setdefault(key, value)
+        return s
 
     def _empty_daily(self) -> dict:
         return {
@@ -73,8 +107,7 @@ class BudgetManager:
 
     def save_status(self):
         self.status["최종업데이트"] = datetime.now(config.KST).strftime("%Y-%m-%d %H:%M")
-        with open(self.status_file, "w", encoding="utf-8") as f:
-            json.dump(self.status, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self.status_file, self.status)
 
     # ── 일일 한도 / 차단 ───────────────────────────
     def daily_loss_limit(self) -> float:
@@ -135,7 +168,7 @@ class BudgetManager:
 
     def record_sell(self, buy_amount: float, sell_amount: float, reason: str):
         """
-        reason: STOP_LOSS / TP1 / TP2 / TRAILING_STOP / TREND_BREAK
+        reason: STOP_LOSS / TP1 / TP2 / TRAILING_STOP / TREND_BREAK / TARGET / TIMEOUT
         """
         self._reset_daily_if_new_day()
         pnl = sell_amount - buy_amount
@@ -147,7 +180,7 @@ class BudgetManager:
         if reason == "STOP_LOSS":
             self.status["손절횟수"] += 1
             self.status["일일"]["연속손절"] += 1
-        elif reason in ("TP1", "TP2"):
+        elif reason in ("TP1", "TP2", "TARGET"):
             self.status["익절횟수"] += 1
             self.status["일일"]["연속손절"] = 0
         elif reason == "TRAILING_STOP":
@@ -163,6 +196,12 @@ class BudgetManager:
                 self.status["일일"]["연속손절"] += 1
             else:
                 self.status["일일"]["연속손절"] = 0
+        elif reason == "TIMEOUT":
+            if pnl >= 0:
+                self.status["익절횟수"] += 1
+                self.status["일일"]["연속손절"] = 0
+            else:
+                self.status["일일"]["연속손절"] += 1
 
         self.status["일일"]["실현손익"] += pnl
 
@@ -187,11 +226,7 @@ class BudgetManager:
         """
         if not os.path.exists(self.baseline_file):
             return None
-        try:
-            with open(self.baseline_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        return self._load_json_or_raise(self.baseline_file, "baseline.json")
 
     def save_baseline(self, volume: float, note: str = ""):
         data = {
@@ -199,13 +234,18 @@ class BudgetManager:
             "recorded_at": datetime.now(config.KST).strftime("%Y-%m-%d %H:%M:%S"),
             "note": note,
         }
-        with open(self.baseline_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self.baseline_file, data)
         log.info(f"📌 baseline 기록: {volume:.8f} ({note})")
 
     def baseline_volume(self) -> float:
         b = self.load_baseline()
-        return float(b["volume"]) if b else 0.0
+        if not b:
+            return 0.0
+        try:
+            return float(b["volume"])
+        except (KeyError, TypeError, ValueError) as e:
+            log.error(f"baseline.json 형식 오류 — baseline 보호를 위해 거래를 중단합니다: {e}", exc_info=True)
+            raise RuntimeError(f"baseline.json 형식 오류: {self.baseline_file}") from e
 
     def ensure_baseline(self, current_exchange_volume: float):
         """
@@ -227,16 +267,11 @@ class BudgetManager:
     def load_position(self) -> Optional[dict]:
         if not os.path.exists(self.position_file):
             return None
-        try:
-            with open(self.position_file, "r", encoding="utf-8") as f:
-                p = json.load(f)
-            return p if p.get("entry_price", 0) > 0 else None
-        except Exception:
-            return None
+        p = self._load_json_or_raise(self.position_file, "position.json")
+        return p if p and p.get("entry_price", 0) > 0 else None
 
     def save_position(self, position: dict):
-        with open(self.position_file, "w", encoding="utf-8") as f:
-            json.dump(position, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self.position_file, position)
 
     def clear_position(self):
         if os.path.exists(self.position_file):
