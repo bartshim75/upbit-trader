@@ -238,13 +238,14 @@ def render_market_state(df: pd.DataFrame, current_price: float):
     checks = {
         "추세 (현재가 > MA200)":         current_price > ma200,
         "정렬 (MA50 > MA200)":            ma50 > ma200,
+        "P > MA50":                        current_price > ma50,
         "눌림목 (현재가 ≤ MA20·1.005)":   current_price <= ma20 * (1 + config.MA_PULLBACK_TOLERANCE),
         f"RSI ∈ [{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]": config.RSI_BUY_MIN <= rsi <= config.RSI_BUY_MAX,
         "반등 캔들 (양봉 또는 직전고가 돌파)": (cur["close"] > prev["high"]) or (cur["close"] > cur["open"]),
     }
     passed = sum(checks.values())
-    st.write(f"**매수 조건 진행: {passed}/5**")
-    cc = st.columns(5)
+    st.write(f"**매수 조건 진행: {passed}/6**")
+    cc = st.columns(6)
     for i, (label, ok) in enumerate(checks.items()):
         cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
 
