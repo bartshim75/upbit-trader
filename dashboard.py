@@ -1,17 +1,17 @@
 """
-dashboard.py — Streamlit 기반 자동매매 모니터링 대시보드
+dashboard.py — Streamlit 기반 자동매매 모니터링 대시보드 (regime-aware)
 
 실행:
   streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
 
 기능:
   - 핵심 지표(KPI) 6개
-  - 현재 포지션 카드
-  - 1H 시장 상태 + 매수 조건 체크리스트
+  - 현재 포지션 카드 (TREND / BB 모드별 자동 분기)
+  - 1H 시장 상태 + Regime 표시 + 전략별 매수 조건 체크리스트
   - 누적/일별 손익 차트
   - 거래내역 표 (필터/정렬/CSV 다운로드)
   - 최근 로그 50줄
-  - 30초 자동 새로고침
+  - 자동 새로고침
   - 비밀번호 보호
 """
 import os
@@ -27,6 +27,7 @@ from streamlit_autorefresh import st_autorefresh
 import config
 import upbit_api as api
 import strategy
+import mean_revert as mr
 
 
 # ── 인증 ─────────────────────────────────────────────
@@ -240,7 +241,7 @@ def render_position_card(position: dict, current_price: float):
 
 
 def render_market_state(df: pd.DataFrame, current_price: float):
-    st.subheader("📈 1H 시장 상태 / 매수 조건")
+    st.subheader("📈 1H 시장 상태 / Regime / 매수 조건")
     if df.empty or len(df) < config.MA_TREND_LONG + 5:
         st.info("지표 계산을 위한 데이터 부족")
         return
@@ -248,29 +249,78 @@ def render_market_state(df: pd.DataFrame, current_price: float):
     ind = strategy.calc_indicators(df)
     cur = ind.iloc[-1]
     prev = ind.iloc[-2]
-    ma20, ma50, ma200 = cur["ma20"], cur["ma50"], cur["ma200"]
-    rsi, atr = cur["rsi"], cur["atr"]
+    ma20, ma50, ma200 = float(cur["ma20"]), float(cur["ma50"]), float(cur["ma200"])
+    rsi, atr = float(cur["rsi"]), float(cur["atr"])
 
+    # ── Regime 판정 ──
+    regime_info = strategy.detect_regime(df)
+    regime = regime_info["regime"]
+    metrics = regime_info.get("metrics", {})
+    regime_badge = {
+        "TREND":    "🔵 추세장 (TREND) — 추세 눌림목 전략 활성",
+        "SIDEWAYS": "🟠 횡보장 (SIDEWAYS) — BB 평균회귀 전략 활성",
+        "BEAR":     "🔴 약세장 (BEAR) — 신규 매수 차단",
+        "NEUTRAL":  "⚪ 데이터 부족",
+    }.get(regime, regime)
+    st.markdown(f"**현재 Regime: {regime_badge}**")
+    if metrics:
+        st.caption(
+            f"MA200 {config.REGIME_LOOKBACK_BARS}봉 기울기 {metrics.get('ma200_slope', 0)*100:+.2f}% / "
+            f"P/MA200 {metrics.get('price_to_ma200', 0)*100:+.2f}%"
+        )
+
+    # ── 추세 지표 + BB 지표 (한 줄) ──
     cols = st.columns(5)
-    cols[0].metric("MA20",  f"{ma20:,.0f}",  f"{(current_price/ma20-1)*100:+.2f}%")
-    cols[1].metric("MA50",  f"{ma50:,.0f}",  f"{(current_price/ma50-1)*100:+.2f}%")
-    cols[2].metric("MA200", f"{ma200:,.0f}", f"{(current_price/ma200-1)*100:+.2f}%")
+    cols[0].metric("MA20",    f"{ma20:,.0f}",    f"{(current_price/ma20-1)*100:+.2f}%")
+    cols[1].metric("MA50",    f"{ma50:,.0f}",    f"{(current_price/ma50-1)*100:+.2f}%")
+    cols[2].metric("MA200",   f"{ma200:,.0f}",   f"{(current_price/ma200-1)*100:+.2f}%")
     cols[3].metric("RSI(14)", f"{rsi:.1f}")
     cols[4].metric("ATR(14)", f"{atr:,.0f}")
 
-    checks = {
-        "추세 (현재가 > MA200)":         current_price > ma200,
-        "정렬 (MA50 > MA200)":            ma50 > ma200,
-        "P > MA50":                        current_price > ma50,
-        "눌림목 (현재가 ≤ MA20·1.005)":   current_price <= ma20 * (1 + config.MA_PULLBACK_TOLERANCE),
-        f"RSI ∈ [{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]": config.RSI_BUY_MIN <= rsi <= config.RSI_BUY_MAX,
-        "반등 캔들 (양봉 또는 직전고가 돌파)": (cur["close"] > prev["high"]) or (cur["close"] > cur["open"]),
-    }
-    passed = sum(checks.values())
-    st.write(f"**매수 조건 진행: {passed}/6**")
-    cc = st.columns(6)
-    for i, (label, ok) in enumerate(checks.items()):
-        cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
+    # BB 지표
+    bb = mr.calc_bb(df)
+    bb_lower = float(bb.iloc[-1]["bb_lower"])
+    bb_mid   = float(bb.iloc[-1]["bb_mid"])
+    bb_upper = float(bb.iloc[-1]["bb_upper"])
+    bcols = st.columns(3)
+    bcols[0].metric(f"BB하단 ({config.BB_PERIOD},{config.BB_STD}σ)",
+                    f"{bb_lower:,.0f}", f"{(current_price/bb_lower-1)*100:+.2f}%")
+    bcols[1].metric("BB중간 (SMA20)",
+                    f"{bb_mid:,.0f}",   f"{(current_price/bb_mid-1)*100:+.2f}%")
+    bcols[2].metric("BB상단",
+                    f"{bb_upper:,.0f}", f"{(current_price/bb_upper-1)*100:+.2f}%")
+
+    # ── Regime 별 매수 조건 체크리스트 ──
+    if regime == "TREND":
+        checks = {
+            "추세 (P > MA200)":                                          current_price > ma200,
+            "정렬 (MA50 > MA200)":                                        ma50 > ma200,
+            "P > MA50":                                                    current_price > ma50,
+            f"눌림목 (P ≤ MA20·{1+config.MA_PULLBACK_TOLERANCE:.3f})":     current_price <= ma20 * (1 + config.MA_PULLBACK_TOLERANCE),
+            f"RSI ∈ [{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]":          config.RSI_BUY_MIN <= rsi <= config.RSI_BUY_MAX,
+            "반등 캔들 (양봉 또는 직전고가 돌파)":                          (float(cur["close"]) > float(prev["high"])) or (float(cur["close"]) > float(cur["open"])),
+        }
+        passed = sum(checks.values())
+        st.write(f"**🔵 TREND 매수 조건: {passed}/6**")
+        cc = st.columns(6)
+        for i, (label, ok) in enumerate(checks.items()):
+            cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
+
+    elif regime == "SIDEWAYS":
+        checks = {
+            f"BB 하단 (P ≤ 하단·{1+config.BB_TOL:.3f})":  current_price <= bb_lower * (1 + config.BB_TOL),
+            "양봉 반등 (close > open)":                    float(cur["close"]) > float(cur["open"]),
+            f"RSI < {config.BB_RSI_MAX:.0f}":               rsi < config.BB_RSI_MAX,
+            f"P > MA200·{config.BB_MA200_FLOOR}":           current_price > ma200 * config.BB_MA200_FLOOR,
+        }
+        passed = sum(checks.values())
+        st.write(f"**🟠 BB 평균회귀 매수 조건: {passed}/4**")
+        cc = st.columns(4)
+        for i, (label, ok) in enumerate(checks.items()):
+            cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
+
+    else:  # BEAR / NEUTRAL
+        st.warning(f"⛔ {regime} 상태 — 신규 매수 평가하지 않음 (자본 보존)")
 
 
 def render_charts(trades_df: pd.DataFrame):
@@ -433,7 +483,11 @@ def main():
     render_log_tail()
 
     # 푸터
-    st.caption(f"Ticker: {config.TICKER}  •  Budget: {config.BUDGET:,.0f}원  •  Position size: {config.POSITION_PCT*100:.0f}%")
+    st.caption(
+        f"Ticker: {config.TICKER}  •  Budget: {config.BUDGET:,.0f}원  •  "
+        f"Position size: {config.POSITION_PCT*100:.0f}%  •  "
+        f"전략: 🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택)"
+    )
 
 
 if __name__ == "__main__":
