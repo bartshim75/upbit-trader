@@ -30,7 +30,7 @@ def exit_job(budget: BudgetManager):
 
 def main():
     log.info("=" * 60)
-    log.info("🤖 업비트 자동매매 (1H 추세 눌림목 전략) 시작")
+    log.info("🤖 업비트 자동매매 (regime-aware: TREND 눌림목 + BB 평균회귀) 시작")
     log.info(f"  티커:           {config.TICKER}")
     log.info(f"  배정예산:       {config.BUDGET:,.0f}원")
     log.info(f"  1회 진입 비율:  {config.POSITION_PCT*100:.1f}% (유효예산 기준)")
@@ -40,6 +40,11 @@ def main():
     log.info(f"  트레일링:       고점 대비 -{config.TRAILING_STOP_PCT*100:.1f}%")
     log.info(f"  추세 필터:      MA{config.MA_PULLBACK}/{config.MA_TREND_MID}/{config.MA_TREND_LONG}, "
              f"RSI({config.RSI_PERIOD})∈[{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]")
+    log.info(f"  BB 평균회귀:    BB({config.BB_PERIOD},{config.BB_STD}σ), RSI<{config.BB_RSI_MAX:.0f}, "
+             f"ATR스탑×{config.BB_ATR_STOP_MULT}, TIMEOUT {config.BB_MAX_HOLD_BARS}h")
+    log.info(f"  Regime:         lookback={config.REGIME_LOOKBACK_BARS}봉, "
+             f"TREND slope>+{config.REGIME_TREND_SLOPE_MIN*100:.1f}%, "
+             f"SIDEWAYS |P/MA200|≤{config.REGIME_SIDEWAYS_BAND*100:.0f}%")
     log.info(f"  일일 손실 한도: -{config.DAILY_LOSS_LIMIT_PCT*100:.1f}% / 연속손절 {config.MAX_CONSECUTIVE_STOPS}회")
     log.info(f"  슬리피지 한도:  {config.SLIPPAGE_LIMIT_PCT*100:.2f}%")
     log.info("=" * 60)

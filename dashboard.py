@@ -179,8 +179,10 @@ def render_position_card(position: dict, current_price: float):
     pnl_pct = (current_price - entry) / entry * 100 if entry else 0
     rem = position.get("remaining_volume", 0)
     pnl_abs = (current_price - entry) * rem
+    stype = position.get("strategy_type", "TREND")
+    badge = "🔵 추세 (TREND)" if stype == "TREND" else "🟠 평균회귀 (BB)"
 
-    st.subheader("💰 현재 포지션")
+    st.subheader(f"💰 현재 포지션 — {badge}")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("매수가", f"{entry:,.0f}원")
     c2.metric("현재가", f"{current_price:,.0f}원", f"{pnl_pct:+.2f}%")
@@ -188,29 +190,50 @@ def render_position_card(position: dict, current_price: float):
     c4.metric("잔량", f"{rem:.8f}")
 
     sl = position.get("stop_loss_price", 0)
-    high = position.get("highest_price", entry)
-    tp1_price = entry * (1 + config.TP1_PCT)
-    tp2_price = entry * (1 + config.TP2_PCT)
-    trail_trigger = high * (1 - config.TRAILING_STOP_PCT) if position.get("tp1_done") else None
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%")
-    c2.metric(
-        "TP1 (+1.5%)",
-        f"{tp1_price:,.0f}원",
-        "✓ 완료" if position.get("tp1_done") else "⏳ 대기",
-    )
-    c3.metric(
-        "TP2 (+3.0%)",
-        f"{tp2_price:,.0f}원",
-        "✓ 완료" if position.get("tp2_done") else "⏳ 대기",
-    )
-    c4.metric(
-        "고점 대비",
-        f"{high:,.0f}원",
-        f"{(current_price/high-1)*100:+.2f}%" if high else "-",
-        help=(f"트레일링 트리거: {trail_trigger:,.0f}원" if trail_trigger else "TP1 이후 트레일링 활성화"),
-    )
+    if stype == "BB":
+        # BB 모드: 손절가 / SMA20 목표 / 보유시간
+        from datetime import datetime as _dt
+        entry_time = position.get("entry_time", "")
+        hours_held = 0.0
+        try:
+            entry_dt = _dt.strptime(entry_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=config.KST)
+            hours_held = (_dt.now(config.KST) - entry_dt).total_seconds() / 3600
+        except (ValueError, TypeError):
+            pass
+        timeout_left = max(0.0, config.BB_MAX_HOLD_BARS - hours_held)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%" if entry else "-")
+        c2.metric("목표(SMA20)", "BB 중간선 도달 시 전량 매도",
+                  help="현재가가 BB 중간선(SMA20) 이상 되면 평균회귀 익절")
+        c3.metric("보유시간", f"{hours_held:.1f}h",
+                  f"TIMEOUT까지 {timeout_left:.1f}h",
+                  help=f"{config.BB_MAX_HOLD_BARS}h 도달 시 자동 청산")
+    else:
+        # TREND 모드: 기존 TP1/TP2/트레일링 표시
+        high = position.get("highest_price", entry)
+        tp1_price = entry * (1 + config.TP1_PCT)
+        tp2_price = entry * (1 + config.TP2_PCT)
+        trail_trigger = high * (1 - config.TRAILING_STOP_PCT) if position.get("tp1_done") else None
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%")
+        c2.metric(
+            f"TP1 (+{config.TP1_PCT*100:.1f}%)",
+            f"{tp1_price:,.0f}원",
+            "✓ 완료" if position.get("tp1_done") else "⏳ 대기",
+        )
+        c3.metric(
+            f"TP2 (+{config.TP2_PCT*100:.1f}%)",
+            f"{tp2_price:,.0f}원",
+            "✓ 완료" if position.get("tp2_done") else "⏳ 대기",
+        )
+        c4.metric(
+            "고점 대비",
+            f"{high:,.0f}원",
+            f"{(current_price/high-1)*100:+.2f}%" if high else "-",
+            help=(f"트레일링 트리거: {trail_trigger:,.0f}원" if trail_trigger else "TP1 이후 트레일링 활성화"),
+        )
 
     entry_time = position.get("entry_time", "")
     st.caption(f"진입 시각: {entry_time}  /  진입 ATR: {position.get('entry_atr', 0):,.0f}")

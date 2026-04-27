@@ -197,10 +197,16 @@ def _execute_buy(upbit, ticker: str, current_price: float,
 
     ind = sig["indicators"]
     entry_atr = float(ind.get("atr", 0))
-    stop_loss_price = strategy.compute_stop_loss(exec_price, entry_atr)
+    strategy_type = sig.get("strategy_type", "TREND")
+    if strategy_type == "BB":
+        from mean_revert import compute_stop_loss_bb
+        stop_loss_price = compute_stop_loss_bb(exec_price, entry_atr)
+    else:
+        stop_loss_price = strategy.compute_stop_loss(exec_price, entry_atr)
 
     position = {
         "ticker":            ticker,
+        "strategy_type":     strategy_type,
         "entry_price":       exec_price,
         "entry_time":        datetime.now(config.KST).strftime("%Y-%m-%d %H:%M:%S"),
         "initial_volume":    volume_purchased,

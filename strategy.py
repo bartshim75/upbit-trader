@@ -1,7 +1,14 @@
 """
-strategy.py — 1시간봉 추세 눌림목 전략
+strategy.py — 1시간봉 매매 전략 (regime-aware dispatcher)
 
-매수 조건 (모두 만족):
+진입 평가 흐름:
+  1) detect_regime(df) 로 현재 시장 상태 판정
+       - TREND    : 추세 눌림목 전략 (_get_buy_signal_trend / _evaluate_exit_trend)
+       - SIDEWAYS : BB 하단 평균회귀 (mean_revert.get_buy_signal_bb / evaluate_exit_bb)
+       - BEAR     : 신규 매수 차단 (자본 보존)
+  2) 이미 진입한 포지션은 진입 시 strategy_type을 따라 종결까지 같은 exit 로직 사용
+
+추세 전략 매수 조건:
   1. 현재가 > MA200                     (상승 추세)
   2. MA50 > MA200                       (중기 추세 정렬)
   3. 현재가 > MA50                      (MA50 위 — 매수 직후 TREND_BREAK 방지)
@@ -9,7 +16,7 @@ strategy.py — 1시간봉 추세 눌림목 전략
   5. RSI(14) ∈ [30, 55]                 (과매도 반등 / 과열 회피)
   6. 반등 캔들 (현재 종가 > 직전 고가  또는  현재 종가 > 현재 시가)
 
-매도 조건:
+추세 전략 매도 조건:
   - 손절: max(매수가 * (1 + MAX_STOP_LOSS), 매수가 - ATR_STOP_MULT * ATR_at_entry)
   - 1차 익절: +TP1_PCT 도달 → 보유의 TP1_RATIO 매도
   - 2차 익절: +TP2_PCT 도달 → 보유의 TP2_RATIO 매도
@@ -64,11 +71,106 @@ def _atr(df: pd.DataFrame, period: int) -> pd.Series:
     return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
-# ── 매수 신호 ────────────────────────────────────────
+# ── Regime 감지 ──────────────────────────────────────
+
+def detect_regime(df: pd.DataFrame) -> dict:
+    """
+    현재 시장 regime 판정.
+    반환: {regime, reason, metrics: {ma200_slope, price_to_ma200}}
+      - TREND    : MA200이 lookback 대비 +REGIME_TREND_SLOPE_MIN 이상 우상향, P > MA200
+      - SIDEWAYS : P가 MA200 ±REGIME_SIDEWAYS_BAND 안 + 큰 하락 추세 아님
+      - BEAR     : 그 외 (신규 매수 차단)
+      - NEUTRAL  : 데이터/지표 부족
+    """
+    need = config.MA_TREND_LONG + config.REGIME_LOOKBACK_BARS
+    if df.empty or len(df) < need:
+        return {"regime": "NEUTRAL", "reason": "데이터 부족", "metrics": {}}
+
+    ma200_series = df["close"].rolling(window=config.MA_TREND_LONG).mean()
+    ma200_now      = ma200_series.iloc[-1]
+    ma200_lookback = ma200_series.iloc[-1 - config.REGIME_LOOKBACK_BARS]
+
+    if pd.isna(ma200_now) or pd.isna(ma200_lookback) or float(ma200_lookback) <= 0:
+        return {"regime": "NEUTRAL", "reason": "MA200 미계산", "metrics": {}}
+
+    slope = (float(ma200_now) - float(ma200_lookback)) / float(ma200_lookback)
+    price = float(df["close"].iloc[-1])
+    rel   = price / float(ma200_now) - 1
+    metrics = {"ma200_slope": slope, "price_to_ma200": rel}
+
+    if slope > config.REGIME_TREND_SLOPE_MIN and price > float(ma200_now):
+        return {"regime": "TREND",
+                "reason": f"추세장 (MA200 {config.REGIME_LOOKBACK_BARS}봉 변화 {slope*100:+.2f}%, P/MA200 {rel*100:+.2f}%)",
+                "metrics": metrics}
+    if abs(rel) <= config.REGIME_SIDEWAYS_BAND and slope > -config.REGIME_BEAR_SLOPE_MAX:
+        return {"regime": "SIDEWAYS",
+                "reason": f"횡보장 (P/MA200 {rel*100:+.2f}%, MA200 slope {slope*100:+.2f}%)",
+                "metrics": metrics}
+    return {"regime": "BEAR",
+            "reason": f"약세장 (MA200 slope {slope*100:+.2f}%, P/MA200 {rel*100:+.2f}%)",
+            "metrics": metrics}
+
+
+# ── 매수 신호 (regime dispatcher) ──────────────────
 
 def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
     """
-    매수 신호 평가. 결과 dict:
+    Regime을 판정해 적합한 전략으로 매수 신호 평가.
+    반환 dict:
+      signal: "BUY" / "HOLD"
+      reason: 사유
+      indicators: 지표값
+      strategy_type: "TREND" / "BB" / "BEAR" / "NEUTRAL"
+      regime: detect_regime() 결과
+    """
+    regime_info = detect_regime(df)
+    regime = regime_info["regime"]
+
+    if regime == "TREND":
+        sig = _get_buy_signal_trend(df, current_price)
+        sig["strategy_type"] = "TREND"
+        sig["regime"] = regime_info
+        # 사유 앞에 regime 표시 (가독성)
+        if sig["signal"] == "HOLD" and sig.get("reason"):
+            sig["reason"] = f"[TREND] {sig['reason']}"
+        elif sig["signal"] == "BUY":
+            sig["reason"] = f"[TREND] {sig['reason']}"
+        return sig
+
+    if regime == "SIDEWAYS":
+        from mean_revert import get_buy_signal_bb
+        sig = get_buy_signal_bb(df, current_price)
+        sig["regime"] = regime_info
+        if sig.get("reason"):
+            sig["reason"] = f"[SIDEWAYS] {sig['reason']}"
+        return sig
+
+    # BEAR / NEUTRAL → 매매 차단
+    return {
+        "signal": "HOLD",
+        "reason": f"[{regime}] 매수 차단 — {regime_info['reason']}",
+        "indicators": {},
+        "strategy_type": regime,
+        "regime": regime_info,
+    }
+
+
+# ── 매도 판정 (포지션 strategy_type dispatcher) ────
+
+def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame) -> dict:
+    """포지션의 strategy_type에 따라 적합한 exit 로직으로 dispatch."""
+    stype = position.get("strategy_type", "TREND")
+    if stype == "BB":
+        from mean_revert import evaluate_exit_bb
+        return evaluate_exit_bb(position, current_price, df)
+    return _evaluate_exit_trend(position, current_price, df)
+
+
+# ── 추세 매수 신호 (기존 로직, private) ────────────
+
+def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
+    """
+    추세 눌림목 매수 신호 평가. 결과 dict:
       signal: "BUY" / "HOLD"
       reason: 사유 문자열
       indicators: ma20, ma50, ma200, rsi, atr
@@ -144,11 +246,11 @@ def compute_stop_loss(entry_price: float, entry_atr: float) -> float:
     return max(pct_stop, atr_stop)
 
 
-# ── 매도 판정 ────────────────────────────────────────
+# ── 추세 매도 판정 (기존 로직, private) ────────────
 
-def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame) -> dict:
+def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame) -> dict:
     """
-    포지션 보유 중 매도 판정.
+    포지션 보유 중 매도 판정 (추세 전략용).
     position: {
       entry_price, initial_volume, remaining_volume,
       entry_atr, stop_loss_price, highest_price,

@@ -86,6 +86,21 @@ RSI_BUY_MAX  = 55
 ATR_PERIOD = 14
 VOLATILITY_HALT_MULT = 3.0
 
+# ── 평균회귀 전략 (BB 하단, 횡보장용) ─────────────────
+BB_PERIOD          = env_int  ("BB_PERIOD",          20)
+BB_STD             = env_float("BB_STD",             2.0)
+BB_TOL             = env_float("BB_TOL",             0.003)   # 하단 +0.3% 안 매수 허용
+BB_RSI_MAX         = env_float("BB_RSI_MAX",         40.0)
+BB_ATR_STOP_MULT   = env_float("BB_ATR_STOP_MULT",   3.0)
+BB_MAX_HOLD_BARS   = env_int  ("BB_MAX_HOLD_BARS",   48)      # 시간 만료 (시간봉 기준)
+BB_MA200_FLOOR     = env_float("BB_MA200_FLOOR",     0.85)    # P > MA200*0.85 (대폭락 회피)
+
+# ── Regime 감지 (매수 평가 시점) ──────────────────────
+REGIME_LOOKBACK_BARS    = env_int  ("REGIME_LOOKBACK_BARS",    50)
+REGIME_TREND_SLOPE_MIN  = env_float("REGIME_TREND_SLOPE_MIN",  0.005)  # MA200 lookback 대비 +0.5% 이상이면 TREND
+REGIME_SIDEWAYS_BAND    = env_float("REGIME_SIDEWAYS_BAND",    0.05)   # P가 MA200 ±5% 안이면 SIDEWAYS 후보
+REGIME_BEAR_SLOPE_MAX   = env_float("REGIME_BEAR_SLOPE_MAX",   0.005)  # slope < -0.5%면 BEAR 처리
+
 # ── 캔들 / API ───────────────────────────────────────
 CANDLE_UNIT  = 60
 CANDLE_COUNT = 250
