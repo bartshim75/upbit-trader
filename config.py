@@ -67,7 +67,7 @@ TP1_PCT   = env_float("TP1_PCT",   0.015)
 TP1_RATIO = env_float("TP1_RATIO", 0.50)
 TP2_PCT   = env_float("TP2_PCT",   0.030)
 TP2_RATIO = env_float("TP2_RATIO", 0.30)
-TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.012)
+TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.018)
 
 # ── 일일 리스크 한도 ─────────────────────────────────
 DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
