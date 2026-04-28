@@ -322,8 +322,12 @@ def render_market_state(df: pd.DataFrame, current_price: float):
             cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
 
     elif regime == "SIDEWAYS":
+        cond_bb_touch = (
+            float(cur["low"]) <= bb_lower * (1 + config.BB_TOL)
+            and current_price <= bb_mid
+        )
         checks = {
-            f"BB 하단 (P ≤ 하단·{1+config.BB_TOL:.3f})":  current_price <= bb_lower * (1 + config.BB_TOL),
+            f"BB 하단 터치 (L ≤ 하단·{1+config.BB_TOL:.3f}, P ≤ 중간선)": cond_bb_touch,
             "양봉 반등 (close > open)":                    float(cur["close"]) > float(cur["open"]),
             f"RSI < {config.BB_RSI_MAX:.0f}":               rsi < config.BB_RSI_MAX,
             f"P > MA200·{config.BB_MA200_FLOOR}":           current_price > ma200 * config.BB_MA200_FLOOR,

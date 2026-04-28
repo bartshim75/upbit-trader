@@ -89,8 +89,8 @@ VOLATILITY_HALT_MULT = 3.0
 # ── 평균회귀 전략 (BB 하단, 횡보장용) ─────────────────
 BB_PERIOD          = env_int  ("BB_PERIOD",          20)
 BB_STD             = env_float("BB_STD",             2.0)
-BB_TOL             = env_float("BB_TOL",             0.003)   # 하단 +0.3% 안 매수 허용
-BB_RSI_MAX         = env_float("BB_RSI_MAX",         40.0)
+BB_TOL             = env_float("BB_TOL",             0.005)   # 저가가 하단 +0.5% 안 터치 시 허용
+BB_RSI_MAX         = env_float("BB_RSI_MAX",         45.0)
 BB_ATR_STOP_MULT   = env_float("BB_ATR_STOP_MULT",   3.0)
 BB_MAX_HOLD_BARS   = env_int  ("BB_MAX_HOLD_BARS",   48)      # 시간 만료 (시간봉 기준)
 BB_MA200_FLOOR     = env_float("BB_MA200_FLOOR",     0.85)    # P > MA200*0.85 (대폭락 회피)

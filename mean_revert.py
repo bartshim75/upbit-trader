@@ -2,7 +2,8 @@
 mean_revert.py — 횡보장용 BB 하단 평균회귀 전략
 
 매수 조건 (모두 만족):
-  1. 현재가 ≤ BB 하단 * (1 + BB_TOL)            (밴드 하단 또는 살짝 안)
+  1. 저가 ≤ BB 하단 * (1 + BB_TOL), 현재가 ≤ BB 중간선
+                                                    (하단 터치 후 과한 반등 추격 회피)
   2. 양봉 반등 (현재 봉 close > open)
   3. RSI < BB_RSI_MAX                             (과매도)
   4. 현재가 > MA200 * BB_MA200_FLOOR              (대폭락/이탈 회피)
@@ -63,13 +64,14 @@ def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
     }
     base["indicators"] = indicators
 
-    cond_band    = current_price <= bb_lower * (1 + config.BB_TOL)
+    candle_low   = float(cur["low"])
+    cond_band    = candle_low <= bb_lower * (1 + config.BB_TOL) and current_price <= bb_mid
     cond_rebound = float(cur["close"]) > float(cur["open"])
     cond_rsi     = rsi < config.BB_RSI_MAX
     cond_floor   = current_price > ma200 * config.BB_MA200_FLOOR
 
     checks = {
-        f"BB하단(P≤bb_low·{1+config.BB_TOL:.3f})": cond_band,
+        f"BB하단터치(L≤bb_low·{1+config.BB_TOL:.3f}, P≤bb_mid)": cond_band,
         "양봉반등(close>open)":                     cond_rebound,
         f"RSI<{config.BB_RSI_MAX:.0f}":              cond_rsi,
         f"P>MA200·{config.BB_MA200_FLOOR}":          cond_floor,
@@ -77,7 +79,7 @@ def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
 
     if all(checks.values()):
         reason = (
-            f"BB-BUY ✓ 평균회귀 (P={current_price:,.0f}, BB하단={bb_lower:,.0f}, "
+            f"BB-BUY ✓ 평균회귀 (P={current_price:,.0f}, L={candle_low:,.0f}, BB하단={bb_lower:,.0f}, "
             f"BB중간={bb_mid:,.0f}, RSI={rsi:.1f}, ATR={atr:,.0f})"
         )
         return {"signal": "BUY", "reason": reason, "indicators": indicators, "strategy_type": "BB"}
@@ -85,7 +87,8 @@ def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
     failed = [k for k, v in checks.items() if not v]
     base["reason"] = (
         f"BB-BUY 보류 — 미충족: {', '.join(failed)} "
-        f"(P={current_price:,.0f}, BB하단={bb_lower:,.0f}, RSI={rsi:.1f})"
+        f"(P={current_price:,.0f}, L={candle_low:,.0f}, BB하단={bb_lower:,.0f}, "
+        f"BB중간={bb_mid:,.0f}, RSI={rsi:.1f})"
     )
     return base
 
