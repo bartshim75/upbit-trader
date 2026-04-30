@@ -100,18 +100,18 @@ def load_trades_df() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
-def load_market_snapshot():
+def load_market_snapshot(ticker: str, candle_count: int):
     """현재가 + 250봉 캔들 + 지표"""
-    cur = api.get_current_price(config.TICKER)
-    df  = api.get_ohlcv(config.TICKER, "minute60", count=config.CANDLE_COUNT)
+    cur = api.get_current_price(ticker)
+    df  = api.get_ohlcv(ticker, "minute60", count=candle_count)
     return cur, df
 
 
 @st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
-def load_balances():
+def load_balances(ticker: str):
     upbit = api.get_upbit_client()
     krw = api.get_krw_balance(upbit)
-    coin = api.get_coin_balance(upbit, config.TICKER)
+    coin = api.get_coin_balance(upbit, ticker)
     return krw, coin
 
 
@@ -134,7 +134,7 @@ def fmt_won(v) -> str:
     return f"{sign}{v:,.0f}원"
 
 
-def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
+def render_kpis(market, status: dict, position: Optional[dict], baseline_vol: float,
                 exchange_vol: float, krw_balance: float, current_price: float,
                 candles: pd.DataFrame):
     s = status or {}
@@ -143,8 +143,10 @@ def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
 
     # 봇 운용 자산 평가액
     bot_vol = max(0.0, exchange_vol - baseline_vol)
-    bot_market_value = bot_vol * current_price + krw_balance
     cum_pnl = s.get("누적실현손익", 0)
+    invested = s.get("누적투자금", 0)
+    allocated_cash = max(0.0, market.BUDGET + cum_pnl - invested)
+    bot_market_value = bot_vol * current_price + allocated_cash
     today_pnl = s.get("일일", {}).get("실현손익", 0)
     win_rate = s.get("승률", 0)
 
@@ -159,12 +161,12 @@ def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
 
     cols = st.columns(7)
     cols[0].metric(
-        f"현재가 ({config.TICKER})",
+        f"현재가 ({market.TICKER})",
         f"{current_price:,.0f}원" if current_price else "-",
         price_delta,
         help="직전 1H봉 종가 대비 변화율",
     )
-    cols[1].metric("배정 예산", f"{config.BUDGET:,.0f}원")
+    cols[1].metric("배정 예산", f"{market.BUDGET:,.0f}원")
     cols[2].metric(
         "봇 운용 자산",
         f"{bot_market_value:,.0f}원",
@@ -173,12 +175,12 @@ def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
     cols[3].metric(
         "누적 손익",
         fmt_won(cum_pnl),
-        delta=f"{cum_pnl/config.BUDGET*100:+.2f}%" if config.BUDGET else None,
+        delta=f"{cum_pnl/market.BUDGET*100:+.2f}%" if market.BUDGET else None,
     )
     cols[4].metric(
         "오늘 손익",
         fmt_won(today_pnl),
-        delta=f"{today_pnl/config.BUDGET*100:+.2f}%" if config.BUDGET else None,
+        delta=f"{today_pnl/market.BUDGET*100:+.2f}%" if market.BUDGET else None,
     )
     cols[5].metric("승률", f"{win_rate:.1f}%")
 
@@ -188,7 +190,7 @@ def render_kpis(status: dict, position: Optional[dict], baseline_vol: float,
         cols[6].metric("거래 상태", "🟢 정상" if pos_label.startswith("보유") else "🟡 대기")
 
 
-def render_position_card(position: dict, current_price: float):
+def render_position_card(market, position: dict, current_price: float):
     if not position:
         return
     entry = position["entry_price"]
@@ -217,30 +219,30 @@ def render_position_card(position: dict, current_price: float):
             hours_held = (_dt.now(config.KST) - entry_dt).total_seconds() / 3600
         except (ValueError, TypeError):
             pass
-        timeout_left = max(0.0, config.BB_MAX_HOLD_BARS - hours_held)
+        timeout_left = max(0.0, market.BB_MAX_HOLD_BARS - hours_held)
         c1, c2, c3 = st.columns(3)
         c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%" if entry else "-")
         c2.metric("목표(SMA20)", "BB 중간선 도달 시 전량 매도",
                   help="현재가가 BB 중간선(SMA20) 이상 되면 평균회귀 익절")
         c3.metric("보유시간", f"{hours_held:.1f}h",
                   f"TIMEOUT까지 {timeout_left:.1f}h",
-                  help=f"{config.BB_MAX_HOLD_BARS}h 도달 시 자동 청산")
+                  help=f"{market.BB_MAX_HOLD_BARS}h 도달 시 자동 청산")
     else:
         # TREND 모드: 기존 TP1/TP2/트레일링 표시
         high = position.get("highest_price", entry)
-        tp1_price = entry * (1 + config.TP1_PCT)
-        tp2_price = entry * (1 + config.TP2_PCT)
-        trail_trigger = high * (1 - config.TRAILING_STOP_PCT) if position.get("tp1_done") else None
+        tp1_price = entry * (1 + market.TP1_PCT)
+        tp2_price = entry * (1 + market.TP2_PCT)
+        trail_trigger = high * (1 - market.TRAILING_STOP_PCT) if position.get("tp1_done") else None
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%")
         c2.metric(
-            f"TP1 (+{config.TP1_PCT*100:.1f}%)",
+            f"TP1 (+{market.TP1_PCT*100:.1f}%)",
             f"{tp1_price:,.0f}원",
             "✓ 완료" if position.get("tp1_done") else "⏳ 대기",
         )
         c3.metric(
-            f"TP2 (+{config.TP2_PCT*100:.1f}%)",
+            f"TP2 (+{market.TP2_PCT*100:.1f}%)",
             f"{tp2_price:,.0f}원",
             "✓ 완료" if position.get("tp2_done") else "⏳ 대기",
         )
@@ -255,32 +257,32 @@ def render_position_card(position: dict, current_price: float):
     st.caption(f"진입 시각: {entry_time}  /  진입 ATR: {position.get('entry_atr', 0):,.0f}")
 
 
-def render_market_state(df: pd.DataFrame, current_price: float):
+def render_market_state(market, df: pd.DataFrame, current_price: float):
     st.subheader("📈 1H 시장 상태 / Regime / 매수 조건")
-    if df.empty or len(df) < config.MA_TREND_LONG + 5:
+    if df.empty or len(df) < market.MA_TREND_LONG + 5:
         st.info("지표 계산을 위한 데이터 부족")
         return
 
-    ind = strategy.calc_indicators(df)
+    ind = strategy.calc_indicators(df, market)
     cur = ind.iloc[-1]
     prev = ind.iloc[-2]
     ma20, ma50, ma200 = float(cur["ma20"]), float(cur["ma50"]), float(cur["ma200"])
     rsi, atr = float(cur["rsi"]), float(cur["atr"])
 
     # ── Regime 판정 ──
-    regime_info = strategy.detect_regime(df)
+    regime_info = strategy.detect_regime(df, market)
     regime = regime_info["regime"]
     metrics = regime_info.get("metrics", {})
     regime_badge = {
         "TREND":    "🔵 추세장 (TREND) — 추세 눌림목 전략 활성",
         "SIDEWAYS": "🟠 횡보장 (SIDEWAYS) — BB 평균회귀 전략 활성",
         "BEAR":     "🔴 약세장 (BEAR) — 신규 매수 차단",
-        "NEUTRAL":  "⚪ 데이터 부족",
+            "NEUTRAL":  "⚪ 데이터 부족",
     }.get(regime, regime)
     st.markdown(f"**현재 Regime: {regime_badge}**")
     if metrics:
         st.caption(
-            f"MA200 {config.REGIME_LOOKBACK_BARS}봉 기울기 {metrics.get('ma200_slope', 0)*100:+.2f}% / "
+            f"MA200 {market.REGIME_LOOKBACK_BARS}봉 기울기 {metrics.get('ma200_slope', 0)*100:+.2f}% / "
             f"P/MA200 {metrics.get('price_to_ma200', 0)*100:+.2f}%"
         )
 
@@ -293,12 +295,12 @@ def render_market_state(df: pd.DataFrame, current_price: float):
     cols[4].metric("ATR(14)", f"{atr:,.0f}")
 
     # BB 지표
-    bb = mr.calc_bb(df)
+    bb = mr.calc_bb(df, market)
     bb_lower = float(bb.iloc[-1]["bb_lower"])
     bb_mid   = float(bb.iloc[-1]["bb_mid"])
     bb_upper = float(bb.iloc[-1]["bb_upper"])
     bcols = st.columns(3)
-    bcols[0].metric(f"BB하단 ({config.BB_PERIOD},{config.BB_STD}σ)",
+    bcols[0].metric(f"BB하단 ({market.BB_PERIOD},{market.BB_STD}σ)",
                     f"{bb_lower:,.0f}", f"{(current_price/bb_lower-1)*100:+.2f}%")
     bcols[1].metric("BB중간 (SMA20)",
                     f"{bb_mid:,.0f}",   f"{(current_price/bb_mid-1)*100:+.2f}%")
@@ -311,8 +313,8 @@ def render_market_state(df: pd.DataFrame, current_price: float):
             "추세 (P > MA200)":                                          current_price > ma200,
             "정렬 (MA50 > MA200)":                                        ma50 > ma200,
             "P > MA50":                                                    current_price > ma50,
-            f"눌림목 (P ≤ MA20·{1+config.MA_PULLBACK_TOLERANCE:.3f})":     current_price <= ma20 * (1 + config.MA_PULLBACK_TOLERANCE),
-            f"RSI ∈ [{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]":          config.RSI_BUY_MIN <= rsi <= config.RSI_BUY_MAX,
+            f"눌림목 (P ≤ MA20·{1+market.MA_PULLBACK_TOLERANCE:.3f})":     current_price <= ma20 * (1 + market.MA_PULLBACK_TOLERANCE),
+            f"RSI ∈ [{market.RSI_BUY_MIN},{market.RSI_BUY_MAX}]":          market.RSI_BUY_MIN <= rsi <= market.RSI_BUY_MAX,
             "반등 캔들 (양봉 또는 직전고가 돌파)":                          (float(cur["close"]) > float(prev["high"])) or (float(cur["close"]) > float(cur["open"])),
         }
         passed = sum(checks.values())
@@ -323,14 +325,14 @@ def render_market_state(df: pd.DataFrame, current_price: float):
 
     elif regime == "SIDEWAYS":
         cond_bb_touch = (
-            float(cur["low"]) <= bb_lower * (1 + config.BB_TOL)
+            float(cur["low"]) <= bb_lower * (1 + market.BB_TOL)
             and current_price <= bb_mid
         )
         checks = {
-            f"BB 하단 터치 (L ≤ 하단·{1+config.BB_TOL:.3f}, P ≤ 중간선)": cond_bb_touch,
+            f"BB 하단 터치 (L ≤ 하단·{1+market.BB_TOL:.3f}, P ≤ 중간선)": cond_bb_touch,
             "양봉 반등 (close > open)":                    float(cur["close"]) > float(cur["open"]),
-            f"RSI < {config.BB_RSI_MAX:.0f}":               rsi < config.BB_RSI_MAX,
-            f"P > MA200·{config.BB_MA200_FLOOR}":           current_price > ma200 * config.BB_MA200_FLOOR,
+            f"RSI < {market.BB_RSI_MAX:.0f}":               rsi < market.BB_RSI_MAX,
+            f"P > MA200·{market.BB_MA200_FLOOR}":           current_price > ma200 * market.BB_MA200_FLOOR,
         }
         passed = sum(checks.values())
         st.write(f"**🟠 BB 평균회귀 매수 조건: {passed}/4**")
@@ -453,60 +455,61 @@ def main():
     cols[0].title("🤖 업비트 자동매매 대시보드")
     cols[1].caption(f"마지막 갱신: {datetime.now(config.KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
-    # 데이터 로드
-    status   = _read_json(config.STATUS_FILE, "status.json") or {}
-    position = _read_json(config.POSITION_FILE, "position.json")
-    baseline = _read_json(config.BASELINE_FILE, "baseline.json")
-    baseline_vol = _baseline_volume_or_stop(baseline)
-
     trades_df = load_trades_df()
+    markets = config.active_markets()
+    tabs = st.tabs([f"{m.name} · {m.TICKER}" for m in markets])
 
-    try:
-        current_price, candles = load_market_snapshot()
-    except Exception as e:
-        st.error(f"시세 조회 실패: {e}")
-        current_price, candles = 0.0, pd.DataFrame()
+    for tab, market in zip(tabs, markets):
+        with tab:
+            status   = _read_json(market.STATUS_FILE, market.STATUS_FILE) or {}
+            position = _read_json(market.POSITION_FILE, market.POSITION_FILE)
+            baseline = _read_json(market.BASELINE_FILE, market.BASELINE_FILE)
+            baseline_vol = _baseline_volume_or_stop(baseline)
 
-    try:
-        krw_balance, coin_info = load_balances()
-        exchange_vol = coin_info["balance"]
-    except Exception as e:
-        st.warning(f"잔고 조회 실패 (API 키 없음 또는 권한 부족): {e}")
-        krw_balance, exchange_vol = 0.0, 0.0
+            if "티커" in trades_df.columns:
+                market_trades = trades_df[trades_df["티커"] == market.TICKER].copy()
+            else:
+                market_trades = trades_df.copy()
 
-    # KPI
-    render_kpis(status, position, baseline_vol, exchange_vol, krw_balance, current_price, candles)
+            try:
+                current_price, candles = load_market_snapshot(market.TICKER, market.CANDLE_COUNT)
+            except Exception as e:
+                st.error(f"시세 조회 실패: {e}")
+                current_price, candles = 0.0, pd.DataFrame()
 
-    st.divider()
+            try:
+                krw_balance, coin_info = load_balances(market.TICKER)
+                exchange_vol = coin_info["balance"]
+            except Exception as e:
+                st.warning(f"잔고 조회 실패 (API 키 없음 또는 권한 부족): {e}")
+                krw_balance, exchange_vol = 0.0, 0.0
 
-    # 포지션 카드
-    if position and (exchange_vol - baseline_vol) > 0:
-        render_position_card(position, current_price)
-        st.divider()
-    else:
-        st.info(f"💤 현재 봇 보유 포지션 없음. (사용자 보유 baseline: {baseline_vol:.8f} BTC)")
-        st.divider()
+            render_kpis(market, status, position, baseline_vol, exchange_vol, krw_balance, current_price, candles)
+            st.divider()
 
-    # 시장 상태 / 매수 조건
-    render_market_state(candles, current_price)
-    st.divider()
+            if position and (exchange_vol - baseline_vol) > 0:
+                render_position_card(market, position, current_price)
+                st.divider()
+            else:
+                coin_symbol = market.TICKER.split("-")[-1]
+                st.info(f"💤 현재 봇 보유 포지션 없음. (사용자 보유 baseline: {baseline_vol:.8f} {coin_symbol})")
+                st.divider()
 
-    # 차트
-    render_charts(trades_df)
-    st.divider()
+            render_market_state(market, candles, current_price)
+            st.divider()
 
-    # 거래 표
-    render_trade_table(trades_df)
+            render_charts(market_trades)
+            st.divider()
 
-    # 로그
+            render_trade_table(market_trades)
+
+            st.caption(
+                f"Ticker: {market.TICKER}  •  Budget: {market.BUDGET:,.0f}원  •  "
+                f"Position size: {market.POSITION_PCT*100:.0f}%  •  "
+                f"전략: 🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택)"
+            )
+
     render_log_tail()
-
-    # 푸터
-    st.caption(
-        f"Ticker: {config.TICKER}  •  Budget: {config.BUDGET:,.0f}원  •  "
-        f"Position size: {config.POSITION_PCT*100:.0f}%  •  "
-        f"전략: 🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택)"
-    )
 
 
 if __name__ == "__main__":

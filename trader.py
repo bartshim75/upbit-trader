@@ -31,11 +31,12 @@ log = get_logger(__name__)
 
 def run_trade_cycle(budget: BudgetManager):
     upbit  = api.get_upbit_client()
-    ticker = config.TICKER
+    settings = budget.settings
+    ticker = settings.TICKER
     log.info(f"━━━ 매매 사이클 시작: {ticker} ━━━")
 
     # ── 1) 시세 / 지표 ─────────────────────────────
-    df = api.get_ohlcv(ticker, interval="minute60", count=config.CANDLE_COUNT)
+    df = api.get_ohlcv(ticker, interval="minute60", count=settings.CANDLE_COUNT)
     if df.empty:
         log.error("캔들 데이터 없음 — 사이클 스킵")
         return
@@ -45,7 +46,7 @@ def run_trade_cycle(budget: BudgetManager):
         log.error("현재가 조회 실패 — 사이클 스킵")
         return
 
-    halt_vol = strategy.is_volatility_halt(df)
+    halt_vol = strategy.is_volatility_halt(df, settings)
     if halt_vol:
         log.warning(f"⚠ 변동성 차단: {halt_vol} — 사이클 스킵")
         budget.print_status()
@@ -78,7 +79,7 @@ def run_trade_cycle(budget: BudgetManager):
             position["highest_price"] = current_price
             budget.save_position(position)
 
-        decision = strategy.evaluate_exit(position, current_price, df)
+        decision = strategy.evaluate_exit(position, current_price, df, settings)
         log.info(f"현재가={current_price:,.0f} | 포지션평가: {decision['action']} | {decision['reason']}")
 
         if decision["action"] != "HOLD":
@@ -95,7 +96,7 @@ def run_trade_cycle(budget: BudgetManager):
         log.info("━━━ 매매 사이클 종료 ━━━\n")
         return
 
-    sig = strategy.get_buy_signal(df, current_price)
+    sig = strategy.get_buy_signal(df, current_price, settings)
     log.info(f"현재가={current_price:,.0f} | {sig['reason']}")
 
     if sig["signal"] != "BUY":
@@ -111,8 +112,8 @@ def run_trade_cycle(budget: BudgetManager):
 
     # 슬리피지 검사
     slip = api.estimate_slippage(ticker, "BUY", current_price)
-    if slip is not None and slip > config.SLIPPAGE_LIMIT_PCT:
-        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {config.SLIPPAGE_LIMIT_PCT*100:.2f}% — 매수 취소")
+    if slip is not None and slip > settings.SLIPPAGE_LIMIT_PCT:
+        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — 매수 취소")
         budget.print_status()
         log.info("━━━ 매매 사이클 종료 ━━━\n")
         return
@@ -134,7 +135,8 @@ def run_exit_check(budget: BudgetManager):
         return
 
     upbit  = api.get_upbit_client()
-    ticker = config.TICKER
+    settings = budget.settings
+    ticker = settings.TICKER
 
     current_price = api.get_current_price(ticker)
     if current_price <= 0:
@@ -155,8 +157,8 @@ def run_exit_check(budget: BudgetManager):
         position["highest_price"] = current_price
         budget.save_position(position)
 
-    df = api.get_ohlcv(ticker, interval="minute60", count=config.CANDLE_COUNT)
-    decision = strategy.evaluate_exit(position, current_price, df)
+    df = api.get_ohlcv(ticker, interval="minute60", count=settings.CANDLE_COUNT)
+    decision = strategy.evaluate_exit(position, current_price, df, settings)
 
     if decision["action"] == "HOLD":
         return  # 평상시는 로그도 안 남김 (분 단위 호출이라 로그 폭증 방지)
@@ -200,9 +202,9 @@ def _execute_buy(upbit, ticker: str, current_price: float,
     strategy_type = sig.get("strategy_type", "TREND")
     if strategy_type == "BB":
         from mean_revert import compute_stop_loss_bb
-        stop_loss_price = compute_stop_loss_bb(exec_price, entry_atr)
+        stop_loss_price = compute_stop_loss_bb(exec_price, entry_atr, budget.settings)
     else:
-        stop_loss_price = strategy.compute_stop_loss(exec_price, entry_atr)
+        stop_loss_price = strategy.compute_stop_loss(exec_price, entry_atr, budget.settings)
 
     position = {
         "ticker":            ticker,
@@ -258,11 +260,11 @@ def _execute_sell(upbit, ticker: str, position: dict, bot_vol: float,
 
     # 슬리피지 체크
     slip = api.estimate_slippage(ticker, "SELL", current_price)
-    if slip is not None and slip > config.SLIPPAGE_LIMIT_PCT:
+    if slip is not None and slip > budget.settings.SLIPPAGE_LIMIT_PCT:
         if action in ("STOP_LOSS", "TRAILING_STOP", "TREND_BREAK"):
             log.warning(f"⚠ 슬리피지 {slip*100:+.2f}% 이지만 {action} → 강제 매도")
         else:
-            log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {config.SLIPPAGE_LIMIT_PCT*100:.2f}% — {action} 매도 취소")
+            log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — {action} 매도 취소")
             return
 
     log.info(f"💸 매도 시도: {safe_volume:.8f} ({action})")
@@ -336,7 +338,7 @@ def _execute_sell(upbit, ticker: str, position: dict, bot_vol: float,
         elif sold_volume + 1e-12 >= target_volume:
             position["tp2_done"] = True
             budget.save_position(position)
-            log.info(f"  → TP2 후: 잔량 {position['remaining_volume']:.8f} (트레일링 -{config.TRAILING_STOP_PCT*100:.1f}% 적용 중)")
+            log.info(f"  → TP2 후: 잔량 {position['remaining_volume']:.8f} (트레일링 -{budget.settings.TRAILING_STOP_PCT*100:.1f}% 적용 중)")
         else:
             budget.save_position(position)
             log.warning(f"  → TP2 부분 체결: 목표={target_volume:.8f}, 체결={sold_volume:.8f}, 잔량={position['remaining_volume']:.8f}")

@@ -37,14 +37,14 @@ log = get_logger(__name__)
 
 # ── 지표 계산 ────────────────────────────────────────
 
-def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def calc_indicators(df: pd.DataFrame, settings=config) -> pd.DataFrame:
     """MA20/50/200, RSI, ATR을 계산해 컬럼으로 추가"""
     df = df.copy()
-    df["ma20"]  = df["close"].rolling(window=config.MA_PULLBACK).mean()
-    df["ma50"]  = df["close"].rolling(window=config.MA_TREND_MID).mean()
-    df["ma200"] = df["close"].rolling(window=config.MA_TREND_LONG).mean()
-    df["rsi"]   = _rsi(df["close"], config.RSI_PERIOD)
-    df["atr"]   = _atr(df, config.ATR_PERIOD)
+    df["ma20"]  = df["close"].rolling(window=settings.MA_PULLBACK).mean()
+    df["ma50"]  = df["close"].rolling(window=settings.MA_TREND_MID).mean()
+    df["ma200"] = df["close"].rolling(window=settings.MA_TREND_LONG).mean()
+    df["rsi"]   = _rsi(df["close"], settings.RSI_PERIOD)
+    df["atr"]   = _atr(df, settings.ATR_PERIOD)
     return df
 
 
@@ -73,7 +73,7 @@ def _atr(df: pd.DataFrame, period: int) -> pd.Series:
 
 # ── Regime 감지 ──────────────────────────────────────
 
-def detect_regime(df: pd.DataFrame) -> dict:
+def detect_regime(df: pd.DataFrame, settings=config) -> dict:
     """
     현재 시장 regime 판정.
     반환: {regime, reason, metrics: {ma200_slope, price_to_ma200}}
@@ -82,13 +82,13 @@ def detect_regime(df: pd.DataFrame) -> dict:
       - BEAR     : 그 외 (신규 매수 차단)
       - NEUTRAL  : 데이터/지표 부족
     """
-    need = config.MA_TREND_LONG + config.REGIME_LOOKBACK_BARS
+    need = settings.MA_TREND_LONG + settings.REGIME_LOOKBACK_BARS
     if df.empty or len(df) < need:
         return {"regime": "NEUTRAL", "reason": "데이터 부족", "metrics": {}}
 
-    ma200_series = df["close"].rolling(window=config.MA_TREND_LONG).mean()
+    ma200_series = df["close"].rolling(window=settings.MA_TREND_LONG).mean()
     ma200_now      = ma200_series.iloc[-1]
-    ma200_lookback = ma200_series.iloc[-1 - config.REGIME_LOOKBACK_BARS]
+    ma200_lookback = ma200_series.iloc[-1 - settings.REGIME_LOOKBACK_BARS]
 
     if pd.isna(ma200_now) or pd.isna(ma200_lookback) or float(ma200_lookback) <= 0:
         return {"regime": "NEUTRAL", "reason": "MA200 미계산", "metrics": {}}
@@ -98,11 +98,11 @@ def detect_regime(df: pd.DataFrame) -> dict:
     rel   = price / float(ma200_now) - 1
     metrics = {"ma200_slope": slope, "price_to_ma200": rel}
 
-    if slope > config.REGIME_TREND_SLOPE_MIN and price > float(ma200_now):
+    if slope > settings.REGIME_TREND_SLOPE_MIN and price > float(ma200_now):
         return {"regime": "TREND",
-                "reason": f"추세장 (MA200 {config.REGIME_LOOKBACK_BARS}봉 변화 {slope*100:+.2f}%, P/MA200 {rel*100:+.2f}%)",
+                "reason": f"추세장 (MA200 {settings.REGIME_LOOKBACK_BARS}봉 변화 {slope*100:+.2f}%, P/MA200 {rel*100:+.2f}%)",
                 "metrics": metrics}
-    if abs(rel) <= config.REGIME_SIDEWAYS_BAND and slope > -config.REGIME_BEAR_SLOPE_MAX:
+    if abs(rel) <= settings.REGIME_SIDEWAYS_BAND and slope > -settings.REGIME_BEAR_SLOPE_MAX:
         return {"regime": "SIDEWAYS",
                 "reason": f"횡보장 (P/MA200 {rel*100:+.2f}%, MA200 slope {slope*100:+.2f}%)",
                 "metrics": metrics}
@@ -113,7 +113,7 @@ def detect_regime(df: pd.DataFrame) -> dict:
 
 # ── 매수 신호 (regime dispatcher) ──────────────────
 
-def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
+def get_buy_signal(df: pd.DataFrame, current_price: float, settings=config) -> dict:
     """
     Regime을 판정해 적합한 전략으로 매수 신호 평가.
     반환 dict:
@@ -123,11 +123,11 @@ def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
       strategy_type: "TREND" / "BB" / "BEAR" / "NEUTRAL"
       regime: detect_regime() 결과
     """
-    regime_info = detect_regime(df)
+    regime_info = detect_regime(df, settings)
     regime = regime_info["regime"]
 
     if regime == "TREND":
-        sig = _get_buy_signal_trend(df, current_price)
+        sig = _get_buy_signal_trend(df, current_price, settings)
         sig["strategy_type"] = "TREND"
         sig["regime"] = regime_info
         # 사유 앞에 regime 표시 (가독성)
@@ -139,7 +139,7 @@ def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
 
     if regime == "SIDEWAYS":
         from mean_revert import get_buy_signal_bb
-        sig = get_buy_signal_bb(df, current_price)
+        sig = get_buy_signal_bb(df, current_price, settings)
         sig["regime"] = regime_info
         if sig.get("reason"):
             sig["reason"] = f"[SIDEWAYS] {sig['reason']}"
@@ -157,18 +157,18 @@ def get_buy_signal(df: pd.DataFrame, current_price: float) -> dict:
 
 # ── 매도 판정 (포지션 strategy_type dispatcher) ────
 
-def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame) -> dict:
+def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame, settings=config) -> dict:
     """포지션의 strategy_type에 따라 적합한 exit 로직으로 dispatch."""
     stype = position.get("strategy_type", "TREND")
     if stype == "BB":
         from mean_revert import evaluate_exit_bb
-        return evaluate_exit_bb(position, current_price, df)
-    return _evaluate_exit_trend(position, current_price, df)
+        return evaluate_exit_bb(position, current_price, df, settings)
+    return _evaluate_exit_trend(position, current_price, df, settings)
 
 
 # ── 추세 매수 신호 (기존 로직, private) ────────────
 
-def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
+def _get_buy_signal_trend(df: pd.DataFrame, current_price: float, settings=config) -> dict:
     """
     추세 눌림목 매수 신호 평가. 결과 dict:
       signal: "BUY" / "HOLD"
@@ -177,11 +177,11 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
     """
     base = {"signal": "HOLD", "reason": "", "indicators": {}}
 
-    if df.empty or len(df) < config.MA_TREND_LONG + 5:
+    if df.empty or len(df) < settings.MA_TREND_LONG + 5:
         base["reason"] = "데이터 부족"
         return base
 
-    ind = calc_indicators(df)
+    ind = calc_indicators(df, settings)
     cur, prev = ind.iloc[-1], ind.iloc[-2]
 
     ma20, ma50, ma200 = cur["ma20"], cur["ma50"], cur["ma200"]
@@ -202,9 +202,9 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
     cond_ma_align   = ma50 > ma200
     cond_above_ma50 = current_price > ma50   # MA50 위에 있어야 TREND_BREAK 즉시 발동 방지
     # 2) 눌림목
-    cond_pullback = current_price <= ma20 * (1 + config.MA_PULLBACK_TOLERANCE)
+    cond_pullback = current_price <= ma20 * (1 + settings.MA_PULLBACK_TOLERANCE)
     # 3) RSI 구간
-    cond_rsi      = config.RSI_BUY_MIN <= rsi <= config.RSI_BUY_MAX
+    cond_rsi      = settings.RSI_BUY_MIN <= rsi <= settings.RSI_BUY_MAX
     # 4) 반등 캔들 (현재 봉이 양봉이거나 직전 고가 돌파)
     cond_rebound  = (cur["close"] > prev["high"]) or (cur["close"] > cur["open"])
 
@@ -212,8 +212,8 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
         "추세(P>MA200)":     cond_uptrend,
         "정렬(MA50>MA200)":  cond_ma_align,
         "P>MA50":            cond_above_ma50,
-        "눌림(P≤MA20·1.005)": cond_pullback,
-        f"RSI∈[{config.RSI_BUY_MIN},{config.RSI_BUY_MAX}]": cond_rsi,
+        f"눌림(P≤MA20·{1 + settings.MA_PULLBACK_TOLERANCE:.3f})": cond_pullback,
+        f"RSI∈[{settings.RSI_BUY_MIN},{settings.RSI_BUY_MAX}]": cond_rsi,
         "반등캔들":           cond_rebound,
     }
 
@@ -236,19 +236,19 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float) -> dict:
 
 # ── 손절가 계산 ──────────────────────────────────────
 
-def compute_stop_loss(entry_price: float, entry_atr: float) -> float:
+def compute_stop_loss(entry_price: float, entry_atr: float, settings=config) -> float:
     """
     손절가 = max(매수가 * (1 + MAX_STOP_LOSS), 매수가 - ATR_STOP_MULT * ATR)
     → 두 값 중 매수가에 더 가까운(=손실폭이 작은) 가격을 사용.
     """
-    pct_stop = entry_price * (1 + config.MAX_STOP_LOSS)
-    atr_stop = entry_price - config.ATR_STOP_MULT * entry_atr
+    pct_stop = entry_price * (1 + settings.MAX_STOP_LOSS)
+    atr_stop = entry_price - settings.ATR_STOP_MULT * entry_atr
     return max(pct_stop, atr_stop)
 
 
 # ── 추세 매도 판정 (기존 로직, private) ────────────
 
-def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame) -> dict:
+def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame, settings=config) -> dict:
     """
     포지션 보유 중 매도 판정 (추세 전략용).
     position: {
@@ -270,8 +270,8 @@ def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame)
 
     # MA50 계산 (추세 이탈 체크용)
     ma50 = None
-    if not df.empty and len(df) >= config.MA_TREND_MID:
-        ma50_series = df["close"].rolling(window=config.MA_TREND_MID).mean()
+    if not df.empty and len(df) >= settings.MA_TREND_MID:
+        ma50_series = df["close"].rolling(window=settings.MA_TREND_MID).mean()
         if not pd.isna(ma50_series.iloc[-1]):
             ma50 = float(ma50_series.iloc[-1])
     out["indicators"] = {"ma50": ma50, "pnl_pct": pnl_pct}
@@ -287,27 +287,27 @@ def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame)
         }
 
     # 2) 1차 익절
-    if not position.get("tp1_done") and pnl_pct >= config.TP1_PCT:
+    if not position.get("tp1_done") and pnl_pct >= settings.TP1_PCT:
         return {
             "action": "TP1",
-            "sell_ratio": config.TP1_RATIO,  # 잔량 대비가 아니라 "초기 수량 대비" — trader에서 환산
-            "reason": f"TP1 +{pnl_pct*100:.2f}% (초기 {config.TP1_RATIO*100:.0f}% 매도)",
+            "sell_ratio": settings.TP1_RATIO,  # 잔량 대비가 아니라 "초기 수량 대비" — trader에서 환산
+            "reason": f"TP1 +{pnl_pct*100:.2f}% (초기 {settings.TP1_RATIO*100:.0f}% 매도)",
             "indicators": out["indicators"],
         }
 
     # 3) 2차 익절
-    if (not position.get("tp2_done")) and position.get("tp1_done") and pnl_pct >= config.TP2_PCT:
+    if (not position.get("tp2_done")) and position.get("tp1_done") and pnl_pct >= settings.TP2_PCT:
         return {
             "action": "TP2",
-            "sell_ratio": config.TP2_RATIO,
-            "reason": f"TP2 +{pnl_pct*100:.2f}% (초기 {config.TP2_RATIO*100:.0f}% 매도)",
+            "sell_ratio": settings.TP2_RATIO,
+            "reason": f"TP2 +{pnl_pct*100:.2f}% (초기 {settings.TP2_RATIO*100:.0f}% 매도)",
             "indicators": out["indicators"],
         }
 
     # 4) 트레일링 스탑 (TP1 이후, 잔여 물량 보호)
     if position.get("tp1_done"):
         highest = position.get("highest_price", entry_price)
-        if highest > 0 and current_price <= highest * (1 - config.TRAILING_STOP_PCT):
+        if highest > 0 and current_price <= highest * (1 - settings.TRAILING_STOP_PCT):
             return {
                 "action": "TRAILING_STOP",
                 "sell_ratio": 1.0,
@@ -331,20 +331,20 @@ def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame)
 
 # ── 변동성 차단 ──────────────────────────────────────
 
-def is_volatility_halt(df: pd.DataFrame) -> Optional[str]:
+def is_volatility_halt(df: pd.DataFrame, settings=config) -> Optional[str]:
     """
     직전 1시간봉의 (고가-저가) 가 ATR * VOLATILITY_HALT_MULT 이상이면 차단 사유 반환.
     안전하면 None 반환.
     """
-    if df.empty or len(df) < config.ATR_PERIOD + 2:
+    if df.empty or len(df) < settings.ATR_PERIOD + 2:
         return None
-    atr_series = _atr(df, config.ATR_PERIOD)
+    atr_series = _atr(df, settings.ATR_PERIOD)
     atr = atr_series.iloc[-2]  # 직전봉 기준 ATR
     if pd.isna(atr) or atr <= 0:
         return None
     last = df.iloc[-1]
     candle_range = last["high"] - last["low"]
-    threshold = atr * config.VOLATILITY_HALT_MULT
+    threshold = atr * settings.VOLATILITY_HALT_MULT
     if candle_range >= threshold:
-        return (f"변동성 급등: 직전봉 변동폭={candle_range:,.0f} ≥ ATR×{config.VOLATILITY_HALT_MULT}={threshold:,.0f}")
+        return (f"변동성 급등: 직전봉 변동폭={candle_range:,.0f} ≥ ATR×{settings.VOLATILITY_HALT_MULT}={threshold:,.0f}")
     return None

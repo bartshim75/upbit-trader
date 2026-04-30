@@ -20,17 +20,19 @@ def _today_str() -> str:
 
 
 class BudgetManager:
-    def __init__(self):
-        self.status_file   = config.STATUS_FILE
-        self.position_file = config.POSITION_FILE
-        self.baseline_file = config.BASELINE_FILE
+    def __init__(self, settings=None):
+        self.settings = settings or config.primary_market()
+        self.status_file   = self.settings.STATUS_FILE
+        self.position_file = self.settings.POSITION_FILE
+        self.baseline_file = self.settings.BASELINE_FILE
         self.status = self._load_status()
         self._reset_daily_if_new_day()
 
     # ── 상태 로드/저장 ──────────────────────────────
     def _default_status(self) -> dict:
         return {
-            "배정예산":         config.BUDGET,
+            "티커":             self.settings.TICKER,
+            "배정예산":         self.settings.BUDGET,
             "누적투자금":       0,
             "누적실현손익":     0,
             "총거래횟수":       0,
@@ -111,7 +113,7 @@ class BudgetManager:
 
     # ── 일일 한도 / 차단 ───────────────────────────
     def daily_loss_limit(self) -> float:
-        return -abs(config.BUDGET * config.DAILY_LOSS_LIMIT_PCT)
+        return -abs(self.settings.BUDGET * self.settings.DAILY_LOSS_LIMIT_PCT)
 
     def is_trading_halted(self) -> Optional[str]:
         """차단되어 있으면 사유 문자열, 아니면 None"""
@@ -121,8 +123,8 @@ class BudgetManager:
             return d.get("중단사유", "거래 중단 플래그")
         if d["실현손익"] <= self.daily_loss_limit():
             return f"일일 손실 한도 도달 ({d['실현손익']:+,.0f}원 ≤ {self.daily_loss_limit():,.0f}원)"
-        if d["연속손절"] >= config.MAX_CONSECUTIVE_STOPS:
-            return f"연속 손절 {d['연속손절']}회 도달 (한도 {config.MAX_CONSECUTIVE_STOPS})"
+        if d["연속손절"] >= self.settings.MAX_CONSECUTIVE_STOPS:
+            return f"연속 손절 {d['연속손절']}회 도달 (한도 {self.settings.MAX_CONSECUTIVE_STOPS})"
         return None
 
     def halt_trading(self, reason: str):
@@ -135,12 +137,12 @@ class BudgetManager:
     # ── 매수 가능 여부 ──────────────────────────────
     def effective_budget(self) -> float:
         """현재 운용 자산 = 배정예산 + 누적실현손익"""
-        return config.BUDGET + self.status["누적실현손익"]
+        return self.settings.BUDGET + self.status["누적실현손익"]
 
     def order_amount(self) -> int:
         """1회 진입 금액 = 유효예산 * POSITION_PCT (최소 주문금액 보장)"""
-        amt = int(self.effective_budget() * config.POSITION_PCT)
-        return max(amt, config.MIN_ORDER_KRW)
+        amt = int(self.effective_budget() * self.settings.POSITION_PCT)
+        return max(amt, self.settings.MIN_ORDER_KRW)
 
     def can_buy(self, krw_balance: float) -> bool:
         halt = self.is_trading_halted()
@@ -291,11 +293,11 @@ class BudgetManager:
         d = s["일일"]
         pnl = s["누적실현손익"]
         pnl_str = f"+{pnl:,.0f}원" if pnl >= 0 else f"{pnl:,.0f}원"
-        pnl_pct = pnl / config.BUDGET * 100 if config.BUDGET else 0
+        pnl_pct = pnl / self.settings.BUDGET * 100 if self.settings.BUDGET else 0
 
         log.info("=" * 56)
-        log.info("📊 현황 요약")
-        log.info(f"  배정예산:      {config.BUDGET:>12,.0f}원")
+        log.info(f"📊 현황 요약 — {self.settings.TICKER}")
+        log.info(f"  배정예산:      {self.settings.BUDGET:>12,.0f}원")
         log.info(f"  유효예산:      {self.effective_budget():>12,.0f}원")
         log.info(f"  누적실현손익:  {pnl_str:>12}  ({pnl_pct:+.2f}%)")
         log.info(f"  1회 진입금액:  {self.order_amount():>12,.0f}원")

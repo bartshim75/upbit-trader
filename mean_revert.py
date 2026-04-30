@@ -21,29 +21,29 @@ from logger import get_logger
 log = get_logger(__name__)
 
 
-def calc_bb(df: pd.DataFrame) -> pd.DataFrame:
+def calc_bb(df: pd.DataFrame, settings=config) -> pd.DataFrame:
     """BB 하단/중간/상단 컬럼 추가."""
     df = df.copy()
-    sma = df["close"].rolling(window=config.BB_PERIOD).mean()
-    sd  = df["close"].rolling(window=config.BB_PERIOD).std()
+    sma = df["close"].rolling(window=settings.BB_PERIOD).mean()
+    sd  = df["close"].rolling(window=settings.BB_PERIOD).std()
     df["bb_mid"]   = sma
-    df["bb_lower"] = sma - config.BB_STD * sd
-    df["bb_upper"] = sma + config.BB_STD * sd
+    df["bb_lower"] = sma - settings.BB_STD * sd
+    df["bb_upper"] = sma + settings.BB_STD * sd
     return df
 
 
-def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
+def get_buy_signal_bb(df: pd.DataFrame, current_price: float, settings=config) -> dict:
     """BB 하단 평균회귀 매수 신호. 반환 dict 형식은 strategy.get_buy_signal과 동일.
     추가로 'strategy_type': 'BB' 필드를 반환한다."""
     from strategy import calc_indicators  # MA200 / RSI / ATR
     base = {"signal": "HOLD", "reason": "", "indicators": {}, "strategy_type": "BB"}
 
-    if df.empty or len(df) < max(config.MA_TREND_LONG, config.BB_PERIOD) + 5:
+    if df.empty or len(df) < max(settings.MA_TREND_LONG, settings.BB_PERIOD) + 5:
         base["reason"] = "데이터 부족"
         return base
 
-    ind = calc_indicators(df)
-    bb  = calc_bb(df)
+    ind = calc_indicators(df, settings)
+    bb  = calc_bb(df, settings)
     cur    = ind.iloc[-1]
     cur_bb = bb.iloc[-1]
 
@@ -65,16 +65,16 @@ def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
     base["indicators"] = indicators
 
     candle_low   = float(cur["low"])
-    cond_band    = candle_low <= bb_lower * (1 + config.BB_TOL) and current_price <= bb_mid
+    cond_band    = candle_low <= bb_lower * (1 + settings.BB_TOL) and current_price <= bb_mid
     cond_rebound = float(cur["close"]) > float(cur["open"])
-    cond_rsi     = rsi < config.BB_RSI_MAX
-    cond_floor   = current_price > ma200 * config.BB_MA200_FLOOR
+    cond_rsi     = rsi < settings.BB_RSI_MAX
+    cond_floor   = current_price > ma200 * settings.BB_MA200_FLOOR
 
     checks = {
-        f"BB하단터치(L≤bb_low·{1+config.BB_TOL:.3f}, P≤bb_mid)": cond_band,
+        f"BB하단터치(L≤bb_low·{1+settings.BB_TOL:.3f}, P≤bb_mid)": cond_band,
         "양봉반등(close>open)":                     cond_rebound,
-        f"RSI<{config.BB_RSI_MAX:.0f}":              cond_rsi,
-        f"P>MA200·{config.BB_MA200_FLOOR}":          cond_floor,
+        f"RSI<{settings.BB_RSI_MAX:.0f}":            cond_rsi,
+        f"P>MA200·{settings.BB_MA200_FLOOR}":        cond_floor,
     }
 
     if all(checks.values()):
@@ -93,7 +93,7 @@ def get_buy_signal_bb(df: pd.DataFrame, current_price: float) -> dict:
     return base
 
 
-def evaluate_exit_bb(position: dict, current_price: float, df: pd.DataFrame) -> dict:
+def evaluate_exit_bb(position: dict, current_price: float, df: pd.DataFrame, settings=config) -> dict:
     """BB 모드 매도 판정 — 단일 exit, 전량 매도."""
     out = {"action": "HOLD", "sell_ratio": 0.0, "reason": "", "indicators": {}}
 
@@ -101,8 +101,8 @@ def evaluate_exit_bb(position: dict, current_price: float, df: pd.DataFrame) -> 
     pnl_pct     = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
     bb_mid = None
-    if not df.empty and len(df) >= config.BB_PERIOD:
-        sma_series = df["close"].rolling(window=config.BB_PERIOD).mean()
+    if not df.empty and len(df) >= settings.BB_PERIOD:
+        sma_series = df["close"].rolling(window=settings.BB_PERIOD).mean()
         if not pd.isna(sma_series.iloc[-1]):
             bb_mid = float(sma_series.iloc[-1])
     out["indicators"] = {"bb_mid": bb_mid, "pnl_pct": pnl_pct}
@@ -133,11 +133,11 @@ def evaluate_exit_bb(position: dict, current_price: float, df: pd.DataFrame) -> 
             entry_dt = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=config.KST)
             now_dt   = datetime.now(config.KST)
             hours_held = (now_dt - entry_dt).total_seconds() / 3600
-            if hours_held >= config.BB_MAX_HOLD_BARS:
+            if hours_held >= settings.BB_MAX_HOLD_BARS:
                 return {
                     "action": "TIMEOUT",
                     "sell_ratio": 1.0,
-                    "reason": f"TIMEOUT 보유 {hours_held:.1f}h ≥ {config.BB_MAX_HOLD_BARS}h ({pnl_pct*100:+.2f}%)",
+                    "reason": f"TIMEOUT 보유 {hours_held:.1f}h ≥ {settings.BB_MAX_HOLD_BARS}h ({pnl_pct*100:+.2f}%)",
                     "indicators": out["indicators"],
                 }
         except (ValueError, TypeError):
@@ -147,6 +147,6 @@ def evaluate_exit_bb(position: dict, current_price: float, df: pd.DataFrame) -> 
     return out
 
 
-def compute_stop_loss_bb(entry_price: float, entry_atr: float) -> float:
+def compute_stop_loss_bb(entry_price: float, entry_atr: float, settings=config) -> float:
     """BB 모드 손절가 = entry - BB_ATR_STOP_MULT × ATR (와이드 스탑, 평균회귀 친화)."""
-    return entry_price - config.BB_ATR_STOP_MULT * entry_atr
+    return entry_price - settings.BB_ATR_STOP_MULT * entry_atr

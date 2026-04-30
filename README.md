@@ -1,18 +1,29 @@
-# 업비트 BTC 자동매매 프로그램
+# 업비트 BTC + DOGE 자동매매 프로그램
 
-**1시간봉 Regime 자동 선택 전략**: TREND 눌림목 + SIDEWAYS BB 평균회귀 + ATR 기반 리스크 관리
+**1시간봉 Regime 자동 선택 전략**: 종목별 독립 설정으로 TREND 눌림목 + SIDEWAYS BB 평균회귀 + ATR 기반 리스크 관리
 
 ---
+
+## 운용 종목
+
+| 종목 | 기본 활성화 | 상태 파일 | 전략 성격 |
+|------|-------------|-----------|-----------|
+| `KRW-BTC` | 예 | `status.json`, `position.json`, `baseline.json` | 보수적인 장기 추세/눌림목 |
+| `KRW-DOGE` | 예 | `status_KRW_DOGE.json`, `position_KRW_DOGE.json`, `baseline_KRW_DOGE.json` | ETH 대비 최근 90일 상대 추세 우위, 더 빠른 추세 감지 + 넓은 리스크 허용 |
+
+DOGE를 끄려면 `.env`에 `ENABLE_DOGE=false`를 설정합니다.
 
 ## 전략 요약
 
 ### 매수
 | Regime | 조건 |
 |------|------|
-| TREND | 현재가 > MA200, MA50 > MA200, 현재가 > MA50, 현재가 ≤ MA20 × 1.005, RSI(14) ∈ [30, 55], 반등 캔들 |
-| SIDEWAYS | 저가 ≤ BB 하단 × 1.005, 현재가 ≤ BB 중간선, 양봉 반등, RSI(14) < 45, 현재가 > MA200 × 0.85 |
+| TREND | 현재가 > 장기 MA, 중기 MA > 장기 MA, 현재가 > 중기 MA, 눌림목, RSI 허용 구간, 반등 캔들 |
+| SIDEWAYS | 저가가 BB 하단 근처, 현재가 ≤ BB 중간선, 양봉 반등, RSI 과매도, 장기 MA 대비 과도한 이탈 아님 |
 | BEAR / NEUTRAL | 신규 매수 차단 |
-| 안전 | 일일 손실/연속손절 한도 내, 슬리피지 ≤ 0.5%, 변동성 정상 |
+| 안전 | 일일 손실/연속손절 한도 내, 종목별 슬리피지 한도 내, 변동성 정상 |
+
+BTC와 DOGE는 위 구조만 공유하고, MA 기간/RSI/손절/익절/슬리피지/예산/상태 파일은 서로 독립입니다.
 
 ### 매도
 | 트리거 | 동작 |
@@ -24,10 +35,10 @@
 | 추세 이탈 | 현재가 < MA50 → 잔여 전량 청산 |
 
 ### 리스크 관리
-- **사용자 기존 자산 보호 (baseline)**: 봇 첫 실행 시 거래소의 BTC 잔고를 `baseline.json`에 기록. 봇은 이 수량을 절대 매도하지 않음. 봇은 자기가 매수한 수량만 추적/매도함.
-- **포지션 크기**: 1회 진입 = 유효예산의 15% (`POSITION_PCT`)
-- **일일 손실 한도**: 배정예산의 -3% 도달 시 당일 신규 매수 차단
-- **연속 손절**: 3회 도달 시 당일 신규 매수 차단
+- **사용자 기존 자산 보호 (baseline)**: 봇 첫 실행 시 종목별 거래소 잔고를 각 baseline 파일에 기록. 봇은 이 수량을 절대 매도하지 않음. 봇은 자기가 매수한 수량만 추적/매도함.
+- **포지션 크기**: 1회 진입 = 종목별 유효예산 × `POSITION_PCT` (DOGE는 `DOGE_POSITION_PCT`)
+- **일일 손실 한도**: 종목별 배정예산 기준 손실 한도 도달 시 해당 종목 신규 매수 차단
+- **연속 손절**: 종목별 연속 손절 한도 도달 시 해당 종목 신규 매수 차단
 - **변동성 차단**: 직전 1H봉 변동폭이 ATR × 3 이상이면 사이클 스킵
 - **슬리피지 검사**: 호가 기준 예상 체결가가 0.5% 이상 불리하면 매수 취소
 
@@ -35,8 +46,8 @@
 | 항목 | 값 |
 |------|------|
 | 실행 주기 | 매 정시 (1시간봉) |
-| 거래 대상 | KRW-BTC (단일 종목) |
-| 배정 예산 | 1,000,000원 (변경 가능) |
+| 거래 대상 | KRW-BTC + KRW-DOGE |
+| 기본 배정 예산 | BTC 1,000,000원 / DOGE 300,000원 (변경 가능) |
 | 캔들 데이터 | 250봉 (MA200 계산) |
 
 ---
@@ -134,9 +145,10 @@ sudo systemctl restart upbit-dashboard
 journalctl -u upbit-dashboard -f
 
 # baseline (사용자 기존 자산 보호)
-python reset_baseline.py --show       # 현재 baseline 확인
-python reset_baseline.py              # 현재 잔고로 재설정 (= 모두 보호)
-python reset_baseline.py --zero       # baseline=0 (= 모두 봇이 운용)
+python reset_baseline.py --show                 # 활성 종목 baseline 확인
+python reset_baseline.py                        # 활성 종목 현재 잔고로 재설정 (= 모두 보호)
+python reset_baseline.py --ticker KRW-DOGE      # DOGE만 재설정
+python reset_baseline.py --zero                 # baseline=0 (= 모두 봇이 운용)
 
 # 데이터 직접 확인
 cat trades.csv
@@ -235,9 +247,9 @@ sudo systemctl enable upbit-trader upbit-dashboard
 | 파일 | 내용 |
 |------|------|
 | `trades.csv` | 매수/매도 전체 내역 (매수가, 매도가, 손익, MA20/50/200, RSI, ATR 등) |
-| `status.json` | 누적 손익, 승률, 일일 실현손익 / 연속손절 / 거래중단 플래그 |
-| `position.json` | 현재 보유 포지션 상태 (매수가, ATR, 손절가, 고점, TP 진행) |
-| `baseline.json` | 사용자 기존 보유 BTC 수량 (봇이 절대 매도하지 않음) |
+| `status.json` / `status_KRW_DOGE.json` | 종목별 누적 손익, 승률, 일일 실현손익 / 연속손절 / 거래중단 플래그 |
+| `position.json` / `position_KRW_DOGE.json` | 종목별 현재 보유 포지션 상태 (매수가, ATR, 손절가, 고점, TP 진행) |
+| `baseline.json` / `baseline_KRW_DOGE.json` | 종목별 사용자 기존 보유 수량 (봇이 절대 매도하지 않음) |
 | `trader.log` | 실행 로그 전체 |
 
 ---
