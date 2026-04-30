@@ -2,6 +2,7 @@
 config.py — 전체 설정값 로드
 .env 파일에서 읽어오며, 코드에 API 키를 절대 하드코딩하지 않습니다.
 """
+from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import timezone, timedelta

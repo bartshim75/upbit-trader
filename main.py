@@ -3,6 +3,7 @@ main.py — 자동매매 진입점
 - 매수/매도 풀 사이클: 매 정시(:00)에 실행
 - 손절/TP/트레일링 체크: 분 단위 (포지션 보유 중일 때만 실제 동작)
 """
+from __future__ import annotations
 import schedule
 import time
 
