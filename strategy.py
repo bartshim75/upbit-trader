@@ -11,17 +11,17 @@ strategy.py — 1시간봉 매매 전략 (regime-aware dispatcher)
 추세 전략 매수 조건:
   1. 현재가 > MA200                     (상승 추세)
   2. MA50 > MA200                       (중기 추세 정렬)
-  3. 현재가 > MA50                      (MA50 위 — 매수 직후 TREND_BREAK 방지)
-  4. 현재가 <= MA20 * (1 + tolerance)   (눌림목)
-  5. RSI(14) ∈ [30, 55]                 (과매도 반등 / 과열 회피)
-  6. 반등 캔들 (현재 종가 > 직전 고가  또는  현재 종가 > 현재 시가)
+  3. 현재가 >= MA50 * (1 - buffer)      (중기선 근처 눌림 허용)
+  4. 현재가 <= MA20 * (1 + tolerance)   (MA20 위 추격 진입 회피)
+  5. RSI(14) ∈ [30, ENTRY_RSI_MAX]      (과열 회피)
+  6. 최근 N봉 가격 범위 상단부 매수 회피
 
 추세 전략 매도 조건:
   - 손절: max(매수가 * (1 + MAX_STOP_LOSS), 매수가 - ATR_STOP_MULT * ATR_at_entry)
   - 1차 익절: +TP1_PCT 도달 → 보유의 TP1_RATIO 매도
   - 2차 익절: +TP2_PCT 도달 → 보유의 TP2_RATIO 매도
   - 잔여 물량: 진입 후 고점 대비 -TRAILING_STOP_PCT 하락 시 전량 매도
-  - 추세 이탈: 현재가 < MA50 → 잔여 전량 매도
+  - 추세 이탈: 완성된 1시간봉 종가가 MA50 버퍼 아래 → 잔여 전량 매도
 
 거래 차단:
   - 직전 1시간봉 변동폭(고가-저가)이 ATR * VOLATILITY_HALT_MULT 이상
@@ -182,7 +182,7 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float, settings=confi
         return base
 
     ind = calc_indicators(df, settings)
-    cur, prev = ind.iloc[-1], ind.iloc[-2]
+    cur = ind.iloc[-1]
 
     ma20, ma50, ma200 = cur["ma20"], cur["ma50"], cur["ma200"]
     rsi, atr          = cur["rsi"], cur["atr"]
@@ -200,36 +200,52 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float, settings=confi
     # 1) 상승 추세
     cond_uptrend    = current_price > ma200
     cond_ma_align   = ma50 > ma200
-    cond_above_ma50 = current_price > ma50   # MA50 위에 있어야 TREND_BREAK 즉시 발동 방지
-    # 2) 눌림목
-    cond_pullback = current_price <= ma20 * (1 + settings.MA_PULLBACK_TOLERANCE)
-    # 3) RSI 구간
-    cond_rsi      = settings.RSI_BUY_MIN <= rsi <= settings.RSI_BUY_MAX
-    # 4) 반등 캔들 (현재 봉이 양봉이거나 직전 고가 돌파)
-    cond_rebound  = (cur["close"] > prev["high"]) or (cur["close"] > cur["open"])
+    # 2) 중기선 근처 눌림: DOGE는 MA50 살짝 아래도 허용하되, 과도한 이탈은 차단.
+    mid_ma_floor = ma50 * (1 - settings.ENTRY_MID_MA_BUFFER_PCT)
+    cond_near_mid_ma = current_price >= mid_ma_floor
+    # 3) 단기 눌림: MA20 위로 튄 가격을 추격하지 않음.
+    pullback_ceiling = ma20 * (1 + settings.ENTRY_PULLBACK_TOLERANCE)
+    cond_pullback = current_price <= pullback_ceiling
+    # 4) RSI 구간: ENTRY_RSI_MAX로 과열 매수 상한을 별도 캡.
+    cond_rsi = settings.RSI_BUY_MIN <= rsi <= settings.ENTRY_RSI_MAX
+    # 5) 최근 범위 상단부 추격 방지.
+    range_pos = _entry_range_position(df, current_price, settings.ENTRY_RANGE_LOOKBACK_BARS)
+    cond_not_chasing = (
+        range_pos is None
+        or range_pos <= settings.ENTRY_RANGE_MAX_POSITION
+    )
+    if range_pos is not None:
+        indicators["range_position"] = float(range_pos)
 
     checks = {
         "추세(P>MA200)":     cond_uptrend,
         "정렬(MA50>MA200)":  cond_ma_align,
-        "P>MA50":            cond_above_ma50,
-        f"눌림(P≤MA20·{1 + settings.MA_PULLBACK_TOLERANCE:.3f})": cond_pullback,
-        f"RSI∈[{settings.RSI_BUY_MIN},{settings.RSI_BUY_MAX}]": cond_rsi,
-        "반등캔들":           cond_rebound,
+        f"P≥MA50·{1 - settings.ENTRY_MID_MA_BUFFER_PCT:.3f}": cond_near_mid_ma,
+        f"눌림(P≤MA20·{1 + settings.ENTRY_PULLBACK_TOLERANCE:.3f})": cond_pullback,
+        f"RSI∈[{settings.RSI_BUY_MIN},{settings.ENTRY_RSI_MAX}]": cond_rsi,
     }
+    if settings.ENTRY_RANGE_LOOKBACK_BARS > 0:
+        range_label = (
+            f"최근{settings.ENTRY_RANGE_LOOKBACK_BARS}봉 상단 추격 회피"
+            f"(≤{settings.ENTRY_RANGE_MAX_POSITION*100:.0f}%)"
+        )
+        checks[range_label] = cond_not_chasing
 
     if all(checks.values()):
+        range_msg = f", RANGE={range_pos*100:.0f}%" if range_pos is not None else ""
         reason = (
-            f"BUY ✓ 추세상승+눌림목+반등 "
+            f"BUY ✓ 추세상승+저가권 눌림 "
             f"(P={current_price:,.0f}, MA20={ma20:,.0f}, MA50={ma50:,.0f}, "
-            f"MA200={ma200:,.0f}, RSI={rsi:.1f}, ATR={atr:,.0f})"
+            f"MA200={ma200:,.0f}, RSI={rsi:.1f}, ATR={atr:,.0f}{range_msg})"
         )
         return {"signal": "BUY", "reason": reason, "indicators": indicators}
 
     failed = [k for k, v in checks.items() if not v]
+    range_msg = f", RANGE={range_pos*100:.0f}%" if range_pos is not None else ""
     base["reason"] = (
         f"BUY 보류 — 미충족: {', '.join(failed)} "
         f"(P={current_price:,.0f}, MA20={ma20:,.0f}, MA50={ma50:,.0f}, "
-        f"MA200={ma200:,.0f}, RSI={rsi:.1f})"
+        f"MA200={ma200:,.0f}, RSI={rsi:.1f}{range_msg})"
     )
     return base
 
@@ -244,6 +260,20 @@ def compute_stop_loss(entry_price: float, entry_atr: float, settings=config) -> 
     pct_stop = entry_price * (1 + settings.MAX_STOP_LOSS)
     atr_stop = entry_price - settings.ATR_STOP_MULT * entry_atr
     return max(pct_stop, atr_stop)
+
+
+def _entry_range_position(df: pd.DataFrame, current_price: float, lookback_bars: int) -> Optional[float]:
+    """최근 lookback 범위에서 현재가 위치를 0~1 비율로 반환. 1에 가까울수록 고가권."""
+    if lookback_bars <= 0 or df.empty:
+        return None
+    recent = df.tail(lookback_bars)
+    if recent.empty:
+        return None
+    recent_low = float(recent["low"].min())
+    recent_high = float(recent["high"].max())
+    if recent_high <= recent_low:
+        return None
+    return (current_price - recent_low) / (recent_high - recent_low)
 
 
 # ── 추세 매도 판정 (기존 로직, private) ────────────
@@ -268,13 +298,29 @@ def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame,
     entry_price = position["entry_price"]
     pnl_pct     = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
-    # MA50 계산 (추세 이탈 체크용)
+    # MA50 계산 (추세 이탈 체크용). 마지막 행은 진행 중인 1H봉일 수 있어
+    # TREND_BREAK에는 완성된 봉(-2 이하)만 사용한다.
     ma50 = None
-    if not df.empty and len(df) >= settings.MA_TREND_MID:
+    trend_break_close = None
+    trend_break_threshold = None
+    trend_break_confirmed = False
+    confirm_bars = max(1, settings.TREND_BREAK_CONFIRM_BARS)
+    if not df.empty and len(df) >= settings.MA_TREND_MID + confirm_bars + 1:
         ma50_series = df["close"].rolling(window=settings.MA_TREND_MID).mean()
-        if not pd.isna(ma50_series.iloc[-1]):
-            ma50 = float(ma50_series.iloc[-1])
-    out["indicators"] = {"ma50": ma50, "pnl_pct": pnl_pct}
+        closed_closes = df["close"].iloc[:-1].tail(confirm_bars)
+        closed_ma50 = ma50_series.iloc[:-1].tail(confirm_bars)
+        if len(closed_closes) == confirm_bars and not closed_ma50.isna().any():
+            threshold_series = closed_ma50 * (1 - settings.TREND_BREAK_BUFFER_PCT)
+            trend_break_confirmed = bool((closed_closes < threshold_series).all())
+            ma50 = float(closed_ma50.iloc[-1])
+            trend_break_close = float(closed_closes.iloc[-1])
+            trend_break_threshold = float(threshold_series.iloc[-1])
+    out["indicators"] = {
+        "ma50": ma50,
+        "pnl_pct": pnl_pct,
+        "trend_break_close": trend_break_close,
+        "trend_break_threshold": trend_break_threshold,
+    }
 
     # 1) 손절 (최우선)
     if current_price <= position["stop_loss_price"]:
@@ -316,12 +362,16 @@ def _evaluate_exit_trend(position: dict, current_price: float, df: pd.DataFrame,
                 "indicators": out["indicators"],
             }
 
-    # 5) 추세 이탈 (MA50 하향 이탈 → 잔여 전량 청산)
-    if ma50 is not None and current_price < ma50:
+    # 5) 추세 이탈 (완성된 1H봉 종가가 MA50 버퍼 아래로 마감 → 잔여 전량 청산)
+    if trend_break_confirmed:
         return {
             "action": "TREND_BREAK",
             "sell_ratio": 1.0,
-            "reason": f"TREND_BREAK 현재가<MA50 ({current_price:,.0f}<{ma50:,.0f}, 누적 {pnl_pct*100:+.2f}%)",
+            "reason": (
+                f"TREND_BREAK 종가<MA50버퍼 "
+                f"({trend_break_close:,.0f}<{trend_break_threshold:,.0f}, "
+                f"확인봉={confirm_bars}, 현재가={current_price:,.0f}, 누적 {pnl_pct*100:+.2f}%)"
+            ),
             "indicators": out["indicators"],
         }
 

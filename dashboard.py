@@ -265,7 +265,6 @@ def render_market_state(market, df: pd.DataFrame, current_price: float):
 
     ind = strategy.calc_indicators(df, market)
     cur = ind.iloc[-1]
-    prev = ind.iloc[-2]
     ma20, ma50, ma200 = float(cur["ma20"]), float(cur["ma50"]), float(cur["ma200"])
     rsi, atr = float(cur["rsi"]), float(cur["atr"])
 
@@ -309,17 +308,27 @@ def render_market_state(market, df: pd.DataFrame, current_price: float):
 
     # ── Regime 별 매수 조건 체크리스트 ──
     if regime == "TREND":
+        range_pos = None
+        if market.ENTRY_RANGE_LOOKBACK_BARS > 0:
+            recent = df.tail(market.ENTRY_RANGE_LOOKBACK_BARS)
+            recent_low = float(recent["low"].min())
+            recent_high = float(recent["high"].max())
+            if recent_high > recent_low:
+                range_pos = (current_price - recent_low) / (recent_high - recent_low)
         checks = {
             "추세 (P > MA200)":                                          current_price > ma200,
             "정렬 (MA50 > MA200)":                                        ma50 > ma200,
-            "P > MA50":                                                    current_price > ma50,
-            f"눌림목 (P ≤ MA20·{1+market.MA_PULLBACK_TOLERANCE:.3f})":     current_price <= ma20 * (1 + market.MA_PULLBACK_TOLERANCE),
-            f"RSI ∈ [{market.RSI_BUY_MIN},{market.RSI_BUY_MAX}]":          market.RSI_BUY_MIN <= rsi <= market.RSI_BUY_MAX,
-            "반등 캔들 (양봉 또는 직전고가 돌파)":                          (float(cur["close"]) > float(prev["high"])) or (float(cur["close"]) > float(cur["open"])),
+            f"P ≥ MA50·{1-market.ENTRY_MID_MA_BUFFER_PCT:.3f}":            current_price >= ma50 * (1 - market.ENTRY_MID_MA_BUFFER_PCT),
+            f"눌림목 (P ≤ MA20·{1+market.ENTRY_PULLBACK_TOLERANCE:.3f})":  current_price <= ma20 * (1 + market.ENTRY_PULLBACK_TOLERANCE),
+            f"RSI ∈ [{market.RSI_BUY_MIN},{market.ENTRY_RSI_MAX}]":        market.RSI_BUY_MIN <= rsi <= market.ENTRY_RSI_MAX,
         }
+        if range_pos is not None:
+            checks[f"최근{market.ENTRY_RANGE_LOOKBACK_BARS}봉 상단 회피 ({range_pos*100:.0f}% ≤ {market.ENTRY_RANGE_MAX_POSITION*100:.0f}%)"] = (
+                range_pos <= market.ENTRY_RANGE_MAX_POSITION
+            )
         passed = sum(checks.values())
-        st.write(f"**🔵 TREND 매수 조건: {passed}/6**")
-        cc = st.columns(6)
+        st.write(f"**🔵 TREND 매수 조건: {passed}/{len(checks)}**")
+        cc = st.columns(len(checks))
         for i, (label, ok) in enumerate(checks.items()):
             cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
 
