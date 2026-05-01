@@ -1,6 +1,6 @@
 """
 main.py — 자동매매 진입점
-- 매수/매도 풀 사이클: 매 정시(:00)에 실행
+- 매수/매도 풀 사이클: 매 시간 9분(:09)에 실행
 - 손절/TP/트레일링 체크: 분 단위 (포지션 보유 중일 때만 실제 동작)
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ def main():
     log.info("▶ 시작 즉시 1회 실행")
     job(budgets)
 
-    schedule.every().hour.at(":00").do(job, budgets=budgets)
+    schedule.every().hour.at(":09").do(job, budgets=budgets)
     schedule.every(config.EXIT_CHECK_INTERVAL_MIN).minutes.do(exit_job, budgets=budgets)
     log.info(f"⏰ 스케줄 등록 — 매 정시 풀 사이클 + {config.EXIT_CHECK_INTERVAL_MIN}분마다 exit 체크")
 
