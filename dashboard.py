@@ -389,7 +389,7 @@ def render_charts(trades_df: pd.DataFrame):
     st.plotly_chart(fig_day, use_container_width=True)
 
 
-def render_trade_table(trades_df: pd.DataFrame):
+def render_trade_table(trades_df: pd.DataFrame, key_prefix: str):
     st.subheader("📋 거래 내역")
     if trades_df.empty:
         st.info("거래 내역이 없습니다.")
@@ -397,10 +397,20 @@ def render_trade_table(trades_df: pd.DataFrame):
 
     # 필터
     col1, col2, col3 = st.columns([1, 1, 2])
-    types = col1.multiselect("종류", options=["매수", "매도"], default=["매수", "매도"])
+    types = col1.multiselect(
+        "종류",
+        options=["매수", "매도"],
+        default=["매수", "매도"],
+        key=f"{key_prefix}_trade_types",
+    )
     reasons = sorted(trades_df["사유"].dropna().unique().tolist())
-    sel_reasons = col2.multiselect("사유", options=reasons, default=reasons)
-    n_rows = col3.slider("표시 행 수", 10, 500, 50)
+    sel_reasons = col2.multiselect(
+        "사유",
+        options=reasons,
+        default=reasons,
+        key=f"{key_prefix}_trade_reasons",
+    )
+    n_rows = col3.slider("표시 행 수", 10, 500, 50, key=f"{key_prefix}_trade_rows")
 
     f = trades_df.copy()
     f = f[f["종류"].isin(types) & f["사유"].isin(sel_reasons)]
@@ -420,7 +430,13 @@ def render_trade_table(trades_df: pd.DataFrame):
     csv = trades_df.drop(columns=["날짜시간_dt", "손익_숫자"], errors="ignore").to_csv(
         index=False, encoding="utf-8-sig"
     )
-    st.download_button("📥 전체 CSV 다운로드", data=csv, file_name="trades.csv", mime="text/csv")
+    st.download_button(
+        "📥 전체 CSV 다운로드",
+        data=csv,
+        file_name=f"{key_prefix}_trades.csv",
+        mime="text/csv",
+        key=f"{key_prefix}_trade_csv",
+    )
 
 
 def render_log_tail():
@@ -501,7 +517,7 @@ def main():
             render_charts(market_trades)
             st.divider()
 
-            render_trade_table(market_trades)
+            render_trade_table(market_trades, key_prefix=market.TICKER.replace("-", "_"))
 
             st.caption(
                 f"Ticker: {market.TICKER}  •  Budget: {market.BUDGET:,.0f}원  •  "
