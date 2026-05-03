@@ -217,12 +217,25 @@ def _get_buy_signal_trend(df: pd.DataFrame, current_price: float, settings=confi
     if range_pos is not None:
         indicators["range_position"] = float(range_pos)
 
+    # 6) 직전 완성봉이 TREND_BREAK 조건을 이미 만족한 상태이면 매수 보류.
+    #    (그렇지 않으면 매수 직후 첫 exit_check에서 즉시 청산되는 죽음의 구간 발생)
+    cond_no_break = True
+    confirm_bars = max(1, settings.TREND_BREAK_CONFIRM_BARS)
+    if len(ind) >= settings.MA_TREND_MID + confirm_bars + 1:
+        closed_closes = ind["close"].iloc[:-1].tail(confirm_bars)
+        closed_ma50 = ind["ma50"].iloc[:-1].tail(confirm_bars)
+        if len(closed_closes) == confirm_bars and not closed_ma50.isna().any():
+            threshold_series = closed_ma50 * (1 - settings.TREND_BREAK_BUFFER_PCT)
+            if bool((closed_closes < threshold_series).all()):
+                cond_no_break = False
+
     checks = {
         "추세(P>MA200)":     cond_uptrend,
         "정렬(MA50>MA200)":  cond_ma_align,
         f"P≥MA50·{1 - settings.ENTRY_MID_MA_BUFFER_PCT:.3f}": cond_near_mid_ma,
         f"눌림(P≤MA20·{1 + settings.ENTRY_PULLBACK_TOLERANCE:.3f})": cond_pullback,
         f"RSI∈[{settings.RSI_BUY_MIN},{settings.ENTRY_RSI_MAX}]": cond_rsi,
+        f"직전{confirm_bars}봉 종가≥MA50·{1 - settings.TREND_BREAK_BUFFER_PCT:.3f}": cond_no_break,
     }
     if settings.ENTRY_RANGE_LOOKBACK_BARS > 0:
         range_label = (

@@ -322,6 +322,17 @@ def render_market_state(market, df: pd.DataFrame, current_price: float):
             f"눌림목 (P ≤ MA20·{1+market.ENTRY_PULLBACK_TOLERANCE:.3f})":  current_price <= ma20 * (1 + market.ENTRY_PULLBACK_TOLERANCE),
             f"RSI ∈ [{market.RSI_BUY_MIN},{market.ENTRY_RSI_MAX}]":        market.RSI_BUY_MIN <= rsi <= market.ENTRY_RSI_MAX,
         }
+        # 직전 완성봉이 TREND_BREAK 조건을 만족하면 매수 보류 (즉시 청산 방지)
+        confirm_bars = max(1, market.TREND_BREAK_CONFIRM_BARS)
+        ma50_series = df["close"].rolling(window=market.MA_TREND_MID).mean()
+        no_break = True
+        if len(df) >= market.MA_TREND_MID + confirm_bars + 1:
+            closed_closes = df["close"].iloc[:-1].tail(confirm_bars)
+            closed_ma50 = ma50_series.iloc[:-1].tail(confirm_bars)
+            if len(closed_closes) == confirm_bars and not closed_ma50.isna().any():
+                threshold_series = closed_ma50 * (1 - market.TREND_BREAK_BUFFER_PCT)
+                no_break = not bool((closed_closes < threshold_series).all())
+        checks[f"직전{confirm_bars}봉 종가 ≥ MA50·{1-market.TREND_BREAK_BUFFER_PCT:.3f}"] = no_break
         if range_pos is not None:
             checks[f"최근{market.ENTRY_RANGE_LOOKBACK_BARS}봉 상단 회피 ({range_pos*100:.0f}% ≤ {market.ENTRY_RANGE_MAX_POSITION*100:.0f}%)"] = (
                 range_pos <= market.ENTRY_RANGE_MAX_POSITION
