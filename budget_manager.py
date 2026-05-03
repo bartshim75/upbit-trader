@@ -22,9 +22,10 @@ def _today_str() -> str:
 class BudgetManager:
     def __init__(self, settings=None):
         self.settings = settings or config.primary_market()
-        self.status_file   = self.settings.STATUS_FILE
-        self.position_file = self.settings.POSITION_FILE
-        self.baseline_file = self.settings.BASELINE_FILE
+        self.status_file    = self.settings.STATUS_FILE
+        self.position_file  = self.settings.POSITION_FILE
+        self.positions_file = self.settings.POSITIONS_FILE
+        self.baseline_file  = self.settings.BASELINE_FILE
         self.status = self._load_status()
         self._reset_daily_if_new_day()
 
@@ -74,6 +75,20 @@ class BudgetManager:
             raise RuntimeError(f"{label} 로드 실패: {path}") from e
         if not isinstance(data, dict):
             log.error(f"{label} 형식 오류 — JSON 객체가 아니므로 거래를 중단합니다: {path}")
+            raise RuntimeError(f"{label} 형식 오류: {path}")
+        return data
+
+    def _load_json_list_or_raise(self, path: str, label: str) -> list:
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            log.error(f"{label} 로드 실패 — 기존 상태를 덮어쓰지 않기 위해 거래를 중단합니다: {e}", exc_info=True)
+            raise RuntimeError(f"{label} 로드 실패: {path}") from e
+        if not isinstance(data, list):
+            log.error(f"{label} 형식 오류 — JSON 배열이 아니므로 거래를 중단합니다: {path}")
             raise RuntimeError(f"{label} 형식 오류: {path}")
         return data
 
@@ -182,7 +197,7 @@ class BudgetManager:
         if reason == "STOP_LOSS":
             self.status["손절횟수"] += 1
             self.status["일일"]["연속손절"] += 1
-        elif reason in ("TP1", "TP2", "TARGET"):
+        elif reason in ("TP1", "TP2", "TARGET", "FIXED_TP"):
             self.status["익절횟수"] += 1
             self.status["일일"]["연속손절"] = 0
         elif reason == "TRAILING_STOP":
@@ -279,6 +294,27 @@ class BudgetManager:
         if os.path.exists(self.position_file):
             os.remove(self.position_file)
 
+    # ── 다중 포지션 (fixed 모드 전용) ─────────────────
+    def load_positions(self) -> list:
+        """fixed 모드 다중 포지션 리스트 로드. 파일이 없으면 [] 반환."""
+        return self._load_json_list_or_raise(self.positions_file, "positions.json")
+
+    def save_positions(self, positions: list):
+        """리스트를 통째로 저장 (atomic)."""
+        # 파일 자체를 비우면 깔끔: 빈 리스트면 파일 삭제
+        if not positions:
+            if os.path.exists(self.positions_file):
+                os.remove(self.positions_file)
+            return
+        # 정렬: 진입시각 오름차순(오래된 것이 위로)
+        sorted_positions = sorted(positions, key=lambda p: p.get("entry_time", ""))
+        self._atomic_write_json(self.positions_file, sorted_positions)
+
+    def add_position(self, position: dict):
+        positions = self.load_positions()
+        positions.append(position)
+        self.save_positions(positions)
+
     # ── API 오류 카운터 (사이클 단위) ──────────────
     def reset_api_errors(self):
         self._api_errors = 0
@@ -295,8 +331,16 @@ class BudgetManager:
         pnl_str = f"+{pnl:,.0f}원" if pnl >= 0 else f"{pnl:,.0f}원"
         pnl_pct = pnl / self.settings.BUDGET * 100 if self.settings.BUDGET else 0
 
+        mode = self.settings.EXIT_STRATEGY
+        if mode == "fixed":
+            n_open = len(self.load_positions())
+            mode_label = f"fixed (+{self.settings.FIXED_TP_PCT*100:.1f}% 정액익절, 다중포지션 {n_open}개 보유)"
+        else:
+            mode_label = "trailing (TP1/TP2/트레일링/손절/추세이탈)"
+
         log.info("=" * 56)
         log.info(f"📊 현황 요약 — {self.settings.TICKER}")
+        log.info(f"  매도 모드:     {mode_label}")
         log.info(f"  배정예산:      {self.settings.BUDGET:>12,.0f}원")
         log.info(f"  유효예산:      {self.effective_budget():>12,.0f}원")
         log.info(f"  누적실현손익:  {pnl_str:>12}  ({pnl_pct:+.2f}%)")

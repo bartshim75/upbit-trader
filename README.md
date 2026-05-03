@@ -8,8 +8,8 @@
 
 | 종목 | 기본 활성화 | 상태 파일 | 전략 성격 |
 |------|-------------|-----------|-----------|
-| `KRW-BTC` | 예 | `status.json`, `position.json`, `baseline.json` | 보수적인 장기 추세/눌림목 |
-| `KRW-DOGE` | 예 | `status_KRW_DOGE.json`, `position_KRW_DOGE.json`, `baseline_KRW_DOGE.json` | ETH 대비 최근 90일 상대 추세 우위, 더 빠른 추세 감지 + 넓은 리스크 허용 |
+| `KRW-BTC` | 예 | `status.json`, `position.json`*(trailing)* / `positions.json`*(fixed)*, `baseline.json` | 보수적인 장기 추세/눌림목 |
+| `KRW-DOGE` | 예 | `status_KRW_DOGE.json`, `position_KRW_DOGE.json`*(trailing)* / `positions_KRW_DOGE.json`*(fixed)*, `baseline_KRW_DOGE.json` | ETH 대비 최근 90일 상대 추세 우위, 더 빠른 추세 감지 + 넓은 리스크 허용 |
 
 DOGE를 끄려면 `.env`에 `ENABLE_DOGE=false`를 설정합니다.
 
@@ -26,6 +26,10 @@ DOGE를 끄려면 `.env`에 `ENABLE_DOGE=false`를 설정합니다.
 BTC와 DOGE는 위 구조만 공유하고, MA 기간/RSI/손절/익절/슬리피지/예산/상태 파일은 서로 독립입니다.
 
 ### 매도
+
+종목별로 두 가지 모드 중 하나를 선택할 수 있습니다 (`.env`로 설정).
+
+#### `trailing` 모드 (기본값) — 분할 익절 + 트레일링
 | 트리거 | 동작 |
 |--------|------|
 | 손절 | `max(매수가×0.98, 매수가 - 1.5×ATR)` 도달 → 전량 |
@@ -33,6 +37,37 @@ BTC와 DOGE는 위 구조만 공유하고, MA 기간/RSI/손절/익절/슬리피
 | 2차 익절 | +3.0% 도달 → 초기 수량의 30% 추가 매도 |
 | 트레일링 | 잔여 20%, 진입 후 고점 대비 -1.8% 하락 시 매도 |
 | 추세 이탈 | 현재가 < MA50 → 잔여 전량 청산 |
+| 동시 보유 | **최대 1포지션** (보유 중에는 신규 매수 평가 자체를 안 함) |
+
+#### `fixed` 모드 — 정액 익절 + 다중 포지션
+| 트리거 | 동작 |
+|--------|------|
+| 익절 | 매수가 +`FIXED_TP_PCT` (기본 +3%) 도달 → 해당 포지션 전량 매도 |
+| 손절 / 트레일링 / 추세이탈 | **없음** (가격이 떨어져도 매도하지 않고 계속 보유) |
+| 동시 보유 | **다중 포지션 허용** — 매수 신호 뜰 때마다 자금 있는 한 추가 매수 |
+| 매수 중단 | 보유 KRW가 1회 진입 금액보다 작아지면 신규 매수 자동 중단 |
+
+**모드 선택 우선순위**: `BTC_EXIT_STRATEGY` / `DOGE_EXIT_STRATEGY` > `EXIT_STRATEGY` (글로벌 기본값)
+
+```ini
+# 예시 1) BTC만 fixed +3%, DOGE는 trailing (기본)
+BTC_EXIT_STRATEGY=fixed
+BTC_FIXED_TP_PCT=0.03
+
+# 예시 2) 둘 다 fixed, 비율 다르게
+BTC_EXIT_STRATEGY=fixed
+BTC_FIXED_TP_PCT=0.03
+DOGE_EXIT_STRATEGY=fixed
+DOGE_FIXED_TP_PCT=0.025
+
+# 예시 3) 글로벌로 한 번에 fixed 적용 (BTC_/DOGE_ 미설정일 때만 적용)
+EXIT_STRATEGY=fixed
+FIXED_TP_PCT=0.03
+```
+
+> ⚠️ **모드 전환 시 주의**: 보유 포지션이 있는 상태에서 모드를 바꾸면 이전 모드의 포지션 파일이 그대로 남아 무시됩니다. 깔끔히 가려면 보유분을 먼저 청산하고 (`position.json` / `positions.json` 비어있는 상태) `.env` 변경 → 봇 재시작 권장.
+
+> ℹ️ **fixed 모드는 손절이 없습니다.** 가격이 끝없이 빠지면 포지션이 영원히 묶일 수 있고, 자금이 모두 묶이면 신규 매수도 중단됩니다. 약세장에서 자본 보존에는 유리하지만, 강한 상승장에서는 단순 보유보다 수익이 적습니다 (+3% 캡 효과).
 
 ### 리스크 관리
 - **사용자 기존 자산 보호 (baseline)**: 봇 첫 실행 시 종목별 거래소 잔고를 각 baseline 파일에 기록. 봇은 이 수량을 절대 매도하지 않음. 봇은 자기가 매수한 수량만 추적/매도함.
@@ -200,7 +235,7 @@ sudo systemctl enable upbit-trader upbit-dashboard
 
 ### 표시 항목
 - **KPI 6개**: 배정 예산 / 봇 운용 자산 / 누적 손익 / 오늘 손익 / 승률 / 거래 상태
-- **포지션 카드**: 매수가, 현재가, 평가손익, 손절가, TP1/TP2 진행, 고점, 잔량
+- **포지션 카드**: trailing 모드 — 매수가, 현재가, 평가손익, 손절가, TP1/TP2 진행, 고점, 잔량 / fixed 모드 — 보유 N개 포지션 표 (진입시각, 매수가, 수량, 평가손익, 목표가까지 거리)
 - **시장 상태**: MA20/50/200, RSI, ATR + 매수 6개 조건 체크리스트
 - **차트**: 누적 실현손익 라인 / 일별 손익 막대 (최근 30일)
 - **거래 내역**: 정렬/필터 가능한 표 + CSV 다운로드
@@ -248,7 +283,8 @@ sudo systemctl enable upbit-trader upbit-dashboard
 |------|------|
 | `trades.csv` | 매수/매도 전체 내역 (매수가, 매도가, 손익, MA20/50/200, RSI, ATR 등) |
 | `status.json` / `status_KRW_DOGE.json` | 종목별 누적 손익, 승률, 일일 실현손익 / 연속손절 / 거래중단 플래그 |
-| `position.json` / `position_KRW_DOGE.json` | 종목별 현재 보유 포지션 상태 (매수가, ATR, 손절가, 고점, TP 진행) |
+| `position.json` / `position_KRW_DOGE.json` | (trailing 모드) 종목별 단일 포지션 상태 (매수가, ATR, 손절가, 고점, TP 진행) |
+| `positions.json` / `positions_KRW_DOGE.json` | (fixed 모드) 종목별 다중 포지션 리스트 (각 매수가, 수량, 목표가) |
 | `baseline.json` / `baseline_KRW_DOGE.json` | 종목별 사용자 기존 보유 수량 (봇이 절대 매도하지 않음) |
 | `trader.log` | 실행 로그 전체 |
 

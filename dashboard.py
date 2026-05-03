@@ -66,6 +66,22 @@ def _read_json(path: str, label: str) -> Optional[dict]:
     return data
 
 
+def _read_json_list(path: str, label: str) -> list:
+    """fixed 모드 positions 파일 (list of dict) 로드. 없으면 [] 반환."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        st.error(f"{label} 로드 실패: {e}")
+        st.stop()
+    if not isinstance(data, list):
+        st.error(f"{label} 형식 오류: JSON 배열이 아닙니다.")
+        st.stop()
+    return data
+
+
 def _baseline_volume_or_stop(baseline: Optional[dict]) -> float:
     if baseline is None:
         return 0.0
@@ -255,6 +271,53 @@ def render_position_card(market, position: dict, current_price: float):
 
     entry_time = position.get("entry_time", "")
     st.caption(f"진입 시각: {entry_time}  /  진입 ATR: {position.get('entry_atr', 0):,.0f}")
+
+
+def render_positions_card_fixed(market, positions: list, current_price: float):
+    """Fixed 모드: 다중 포지션을 표 + 합계 메트릭으로 렌더."""
+    n = len(positions)
+    fixed_pct = market.FIXED_TP_PCT * 100
+    st.subheader(f"💰 보유 포지션 (Fixed +{fixed_pct:.1f}% 익절, 다중) — {n}개")
+
+    if n == 0:
+        st.info("💤 현재 보유 포지션 없음. 매수 신호 시 자동 진입.")
+        return
+
+    # 합계 메트릭
+    total_invested = sum(float(p.get("krw_invested", 0)) for p in positions)
+    total_volume = sum(float(p.get("remaining_volume", 0)) for p in positions)
+    total_market_value = total_volume * current_price if current_price else 0
+    unrealized = total_market_value - total_invested
+    unrealized_pct = (unrealized / total_invested * 100) if total_invested else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("보유 포지션", f"{n}개")
+    c2.metric("투자 원금 합계", f"{total_invested:,.0f}원")
+    c3.metric("평가금액 (현재가)", f"{total_market_value:,.0f}원")
+    c4.metric("평가손익", fmt_won(unrealized), f"{unrealized_pct:+.2f}%")
+
+    # 포지션 표
+    rows = []
+    for p in positions:
+        entry = float(p.get("entry_price", 0))
+        target = float(p.get("target_price", entry * (1 + market.FIXED_TP_PCT)))
+        rem_vol = float(p.get("remaining_volume", 0))
+        invested = float(p.get("krw_invested", 0))
+        cur_value = rem_vol * current_price if current_price else 0
+        pnl_pct = (current_price / entry - 1) * 100 if entry and current_price else 0
+        gap_to_target = (target / current_price - 1) * 100 if current_price else 0
+        rows.append({
+            "진입시각":    p.get("entry_time", "-"),
+            "매수가":      f"{entry:,.2f}",
+            "수량":        f"{rem_vol:.8f}",
+            "투자원금":    f"{invested:,.0f}",
+            "현재 평가":   f"{cur_value:,.0f}",
+            "현재 손익률": f"{pnl_pct:+.2f}%",
+            "목표가":      f"{target:,.2f}",
+            "목표까지":    f"{gap_to_target:+.2f}%",
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def render_market_state(market, df: pd.DataFrame, current_price: float):
@@ -498,9 +561,15 @@ def main():
     for tab, market in zip(tabs, markets):
         with tab:
             status   = _read_json(market.STATUS_FILE, market.STATUS_FILE) or {}
-            position = _read_json(market.POSITION_FILE, market.POSITION_FILE)
             baseline = _read_json(market.BASELINE_FILE, market.BASELINE_FILE)
             baseline_vol = _baseline_volume_or_stop(baseline)
+            is_fixed_mode = (market.EXIT_STRATEGY == "fixed")
+            if is_fixed_mode:
+                positions_list = _read_json_list(market.POSITIONS_FILE, market.POSITIONS_FILE)
+                position = positions_list[0] if positions_list else None  # KPI에서 "보유 중" 표시용
+            else:
+                positions_list = []
+                position = _read_json(market.POSITION_FILE, market.POSITION_FILE)
 
             if "티커" in trades_df.columns:
                 market_trades = trades_df[trades_df["티커"] == market.TICKER].copy()
@@ -523,7 +592,10 @@ def main():
             render_kpis(market, status, position, baseline_vol, exchange_vol, krw_balance, current_price, candles)
             st.divider()
 
-            if position and (exchange_vol - baseline_vol) > 0:
+            if is_fixed_mode:
+                render_positions_card_fixed(market, positions_list, current_price)
+                st.divider()
+            elif position and (exchange_vol - baseline_vol) > 0:
                 render_position_card(market, position, current_price)
                 st.divider()
             else:
@@ -539,10 +611,15 @@ def main():
 
             render_trade_table(market_trades, key_prefix=market.TICKER.replace("-", "_"))
 
+            mode_desc = (
+                f"🟣 Fixed +{market.FIXED_TP_PCT*100:.1f}% 익절 (다중포지션, 손절·트레일링 없음)"
+                if is_fixed_mode
+                else "🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택, TP1/TP2/트레일링/손절)"
+            )
             st.caption(
                 f"Ticker: {market.TICKER}  •  Budget: {market.BUDGET:,.0f}원  •  "
                 f"Position size: {market.POSITION_PCT*100:.0f}%  •  "
-                f"전략: 🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택)"
+                f"매도 모드: {mode_desc}"
             )
 
     render_log_tail()

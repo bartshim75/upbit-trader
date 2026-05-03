@@ -105,7 +105,10 @@ class MarketSettings:
     API_ERROR_LIMIT: int
     STATUS_FILE: str
     POSITION_FILE: str
+    POSITIONS_FILE: str   # fixed 모드 다중 포지션 리스트 파일
     BASELINE_FILE: str
+    EXIT_STRATEGY: str    # "trailing" (기존) | "fixed" (+FIXED_TP_PCT 정액익절, 다중포지션)
+    FIXED_TP_PCT: float
 
 
 # ── 업비트 API ──────────────────────────────────────
@@ -129,6 +132,12 @@ TP1_RATIO = env_float("TP1_RATIO", 0.50)
 TP2_PCT   = env_float("TP2_PCT",   0.030)
 TP2_RATIO = env_float("TP2_RATIO", 0.30)
 TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.018)
+
+# ── 매도 전략 모드 (글로벌 기본값, per-market 오버라이드 가능) ───
+# "trailing" : 기존 동작 (TP1/TP2/트레일링/손절/추세이탈, 동시 1포지션)
+# "fixed"    : +FIXED_TP_PCT 정액 익절만 (손절/트레일링 없음, 다중 포지션 허용)
+EXIT_STRATEGY = env_str("EXIT_STRATEGY", "trailing")
+FIXED_TP_PCT  = env_float("FIXED_TP_PCT", 0.03)
 
 # ── 일일 리스크 한도 ─────────────────────────────────
 DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
@@ -180,11 +189,16 @@ API_ERROR_LIMIT    = env_int  ("API_ERROR_LIMIT",    3)
 EXIT_CHECK_INTERVAL_MIN = env_int("EXIT_CHECK_INTERVAL_MIN", 1)
 
 # ── 파일 경로 ────────────────────────────────────────
-TRADES_FILE   = "trades.csv"
-STATUS_FILE   = "status.json"
-POSITION_FILE = "position.json"
-BASELINE_FILE = "baseline.json"
-LOG_FILE      = "trader.log"
+TRADES_FILE    = "trades.csv"
+STATUS_FILE    = "status.json"
+POSITION_FILE  = "position.json"      # trailing 모드: 단일 포지션 dict
+POSITIONS_FILE = "positions.json"     # fixed 모드: 다중 포지션 list
+BASELINE_FILE  = "baseline.json"
+LOG_FILE       = "trader.log"
+
+# ── BTC 매도 전략 오버라이드 ─────────────────────────
+BTC_EXIT_STRATEGY = env_str  ("BTC_EXIT_STRATEGY", EXIT_STRATEGY)
+BTC_FIXED_TP_PCT  = env_float("BTC_FIXED_TP_PCT",  FIXED_TP_PCT)
 
 
 def _ticker_suffix(ticker: str) -> str:
@@ -240,7 +254,10 @@ def _primary_market() -> MarketSettings:
         API_ERROR_LIMIT=API_ERROR_LIMIT,
         STATUS_FILE=STATUS_FILE,
         POSITION_FILE=POSITION_FILE,
+        POSITIONS_FILE=POSITIONS_FILE,
         BASELINE_FILE=BASELINE_FILE,
+        EXIT_STRATEGY=BTC_EXIT_STRATEGY,
+        FIXED_TP_PCT=BTC_FIXED_TP_PCT,
     )
 
 
@@ -305,6 +322,9 @@ DOGE_CANDLE_COUNT = env_int("DOGE_CANDLE_COUNT", 250)
 DOGE_SLIPPAGE_LIMIT_PCT = env_float("DOGE_SLIPPAGE_LIMIT_PCT", 0.008)
 DOGE_API_ERROR_LIMIT = API_ERROR_LIMIT
 
+DOGE_EXIT_STRATEGY = env_str  ("DOGE_EXIT_STRATEGY", EXIT_STRATEGY)
+DOGE_FIXED_TP_PCT  = env_float("DOGE_FIXED_TP_PCT",  FIXED_TP_PCT)
+
 
 def _doge_market() -> MarketSettings:
     suffix = _ticker_suffix(DOGE_TICKER)
@@ -356,7 +376,10 @@ def _doge_market() -> MarketSettings:
         API_ERROR_LIMIT=DOGE_API_ERROR_LIMIT,
         STATUS_FILE=f"status_{suffix}.json",
         POSITION_FILE=f"position_{suffix}.json",
+        POSITIONS_FILE=f"positions_{suffix}.json",
         BASELINE_FILE=f"baseline_{suffix}.json",
+        EXIT_STRATEGY=DOGE_EXIT_STRATEGY,
+        FIXED_TP_PCT=DOGE_FIXED_TP_PCT,
     )
 
 
@@ -403,6 +426,10 @@ def _validate_market(market: MarketSettings):
         raise ValueError(f"❌ {market.name}: TP1_RATIO + TP2_RATIO < 1 이어야 트레일링 잔여 물량이 남습니다.")
     if market.BUDGET < market.MIN_ORDER_KRW:
         raise ValueError(f"❌ {market.name}: BUDGET은 MIN_ORDER_KRW 이상이어야 합니다.")
+    if market.EXIT_STRATEGY not in ("trailing", "fixed"):
+        raise ValueError(f"❌ {market.name}: EXIT_STRATEGY는 'trailing' 또는 'fixed' 여야 합니다. (현재: {market.EXIT_STRATEGY})")
+    if market.FIXED_TP_PCT <= 0:
+        raise ValueError(f"❌ {market.name}: FIXED_TP_PCT는 0보다 커야 합니다. (현재: {market.FIXED_TP_PCT})")
 
 
 def validate():

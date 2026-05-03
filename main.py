@@ -35,6 +35,10 @@ def _log_market_settings(market):
     log.info(f"  [{market.name}] 티커:        {market.TICKER}")
     log.info(f"  [{market.name}] 배정예산:    {market.BUDGET:,.0f}원")
     log.info(f"  [{market.name}] 1회 진입:    {market.POSITION_PCT*100:.1f}% (유효예산 기준)")
+    if market.EXIT_STRATEGY == "fixed":
+        log.info(f"  [{market.name}] 매도 모드:   🟣 FIXED (+{market.FIXED_TP_PCT*100:.1f}% 정액익절, 다중포지션, 손절·트레일링 없음)")
+    else:
+        log.info(f"  [{market.name}] 매도 모드:   🔵 TRAILING (TP1/TP2/트레일링/손절/추세이탈, 동시 1포지션)")
     log.info(f"  [{market.name}] 손절:        {market.MAX_STOP_LOSS*100:.1f}% / ATR×{market.ATR_STOP_MULT}")
     log.info(f"  [{market.name}] 분할익절:    +{market.TP1_PCT*100:.1f}%×{market.TP1_RATIO*100:.0f}% / "
              f"+{market.TP2_PCT*100:.1f}%×{market.TP2_RATIO*100:.0f}%")

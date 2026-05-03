@@ -33,7 +33,7 @@ def run_trade_cycle(budget: BudgetManager):
     upbit  = api.get_upbit_client()
     settings = budget.settings
     ticker = settings.TICKER
-    log.info(f"━━━ 매매 사이클 시작: {ticker} ━━━")
+    log.info(f"━━━ 매매 사이클 시작: {ticker} (mode={settings.EXIT_STRATEGY}) ━━━")
 
     # ── 1) 시세 / 지표 ─────────────────────────────
     df = api.get_ohlcv(ticker, interval="minute60", count=settings.CANDLE_COUNT)
@@ -47,10 +47,6 @@ def run_trade_cycle(budget: BudgetManager):
         return
 
     halt_vol = strategy.is_volatility_halt(df, settings)
-    if halt_vol:
-        log.warning(f"⚠ 변동성 차단: {halt_vol} — 사이클 스킵")
-        budget.print_status()
-        return
 
     # ── 2) 잔고 / baseline ─────────────────────────
     coin_info     = api.get_coin_balance(upbit, ticker)
@@ -62,6 +58,18 @@ def run_trade_cycle(budget: BudgetManager):
     bot_vol      = budget.bot_owned_volume(exchange_vol)
 
     log.info(f"잔고: 거래소={exchange_vol:.8f} | baseline(보호)={baseline_vol:.8f} | 봇운용={bot_vol:.8f}")
+
+    # ── fixed 모드: 다중 포지션 분기 ────────────────
+    if settings.EXIT_STRATEGY == "fixed":
+        _run_fixed_cycle(upbit, ticker, df, current_price, exchange_vol, bot_vol, halt_vol, budget)
+        log.info("━━━ 매매 사이클 종료 ━━━\n")
+        return
+
+    # ── trailing 모드 (기존 동작) ──────────────────
+    if halt_vol:
+        log.warning(f"⚠ 변동성 차단: {halt_vol} — 사이클 스킵")
+        budget.print_status()
+        return
 
     # ── 3) 포지션 평가 / 매도 ──────────────────────
     position = budget.load_position()
@@ -126,16 +134,36 @@ def run_trade_cycle(budget: BudgetManager):
 # ── 분 단위 exit 체크 ───────────────────────────────
 def run_exit_check(budget: BudgetManager):
     """
-    포지션 보유 중일 때만 손절/TP/트레일링/추세이탈을 분 단위로 평가.
+    포지션 보유 중일 때만 매도 조건을 분 단위로 평가.
     무포지션이면 즉시 리턴 (저렴 — 파일 한 번 읽고 끝).
     매수 평가는 절대 하지 않음 (매수는 정시 run_trade_cycle 전용).
     """
+    settings = budget.settings
+
+    # fixed 모드: 다중 포지션 체크
+    if settings.EXIT_STRATEGY == "fixed":
+        positions = budget.load_positions()
+        if not positions:
+            return
+        upbit = api.get_upbit_client()
+        ticker = settings.TICKER
+        current_price = api.get_current_price(ticker)
+        if current_price <= 0:
+            log.warning("[exit-check/fixed] 현재가 조회 실패 — 스킵")
+            return
+        coin_info = api.get_coin_balance(upbit, ticker)
+        exchange_vol = coin_info["balance"]
+        bot_vol = budget.bot_owned_volume(exchange_vol)
+        _check_fixed_exits(upbit, ticker, positions, current_price, bot_vol, budget,
+                           context="exit-check")
+        return
+
+    # trailing 모드 (기존 동작)
     position = budget.load_position()
     if position is None:
         return
 
     upbit  = api.get_upbit_client()
-    settings = budget.settings
     ticker = settings.TICKER
 
     current_price = api.get_current_price(ticker)
@@ -350,3 +378,197 @@ def _execute_sell(upbit, ticker: str, position: dict, bot_vol: float,
         else:
             budget.save_position(position)
             log.warning(f"  → {action} 부분 체결: 잔량 {position['remaining_volume']:.8f} 유지")
+
+
+# ── Fixed 모드 (다중 포지션 / +FIXED_TP_PCT 정액익절) ───────────
+def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
+                     exchange_vol: float, bot_vol: float, halt_vol,
+                     budget: BudgetManager):
+    """
+    Fixed 모드 사이클:
+      1) 보유 포지션 전체에 대해 +FIXED_TP_PCT 도달 체크 → 도달분 매도
+      2) 변동성 차단 아니고, 일일 한도 안 걸렸으면, 매수 신호 평가
+      3) 매수 가능(잔고 충분 + POSITION_PCT 한도)하면 신규 포지션 추가
+    """
+    settings = budget.settings
+    positions = budget.load_positions()
+
+    # 1) 매도 평가 (변동성 차단과 무관 — 익절은 항상 처리)
+    positions = _check_fixed_exits(upbit, ticker, positions, current_price, bot_vol,
+                                   budget, context="cycle")
+
+    # 2) 매수 평가
+    if halt_vol:
+        log.warning(f"⚠ 변동성 차단: {halt_vol} — 신규 매수만 스킵 (보유 매도는 처리됨)")
+        budget.print_status()
+        return
+
+    halt = budget.is_trading_halted()
+    if halt:
+        log.info(f"⛔ 신규 매수 차단: {halt}")
+        budget.print_status()
+        return
+
+    sig = strategy.get_buy_signal(df, current_price, settings)
+    log.info(f"현재가={current_price:,.0f} | {sig['reason']}")
+
+    if sig["signal"] != "BUY":
+        budget.print_status()
+        return
+
+    krw = api.get_krw_balance(upbit)
+    if not budget.can_buy(krw):
+        budget.print_status()
+        return
+
+    slip = api.estimate_slippage(ticker, "BUY", current_price)
+    if slip is not None and slip > settings.SLIPPAGE_LIMIT_PCT:
+        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — 매수 취소")
+        budget.print_status()
+        return
+
+    _execute_buy_fixed(upbit, ticker, current_price, sig, budget, exchange_vol)
+    budget.print_status()
+
+
+def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float,
+                       bot_vol: float, budget: BudgetManager, context: str) -> list:
+    """
+    각 포지션을 evaluate_exit으로 검사해서 FIXED_TP면 매도 실행.
+    매도 후 남은 포지션 리스트를 반환 (호출측 처리 + 디스크 저장).
+    bot_vol(거래소 잔고 - baseline)을 초과해서 매도하지 않도록 누적 캡 적용.
+    """
+    if not positions:
+        return positions
+
+    settings = budget.settings
+    remaining_bot_vol = float(bot_vol)
+    surviving = []
+
+    for pos in positions:
+        decision = strategy.evaluate_exit(pos, current_price, None, settings)
+        if decision["action"] != "FIXED_TP":
+            surviving.append(pos)
+            continue
+
+        log.info(f"[{context}/fixed] {decision['action']} | {decision['reason']}")
+        target_volume = pos.get("remaining_volume", 0)
+        safe_volume = min(target_volume, remaining_bot_vol)
+        if safe_volume <= 0:
+            log.warning(f"⚠ baseline 보호 한도 → 이 포지션 매도 보류 (남은 매도 가능 {remaining_bot_vol:.8f})")
+            surviving.append(pos)
+            continue
+        if safe_volume < target_volume:
+            log.warning(f"⚠ 안전 캡 적용: 목표={target_volume:.8f} → 실제={safe_volume:.8f}")
+
+        sold = _execute_sell_fixed(upbit, ticker, pos, safe_volume, current_price, budget)
+        remaining_bot_vol = max(0.0, remaining_bot_vol - sold)
+        if sold + 1e-12 < target_volume:
+            # 부분 체결 → 잔량 유지
+            pos["remaining_volume"] = max(0.0, target_volume - sold)
+            log.warning(f"  → FIXED_TP 부분 체결, 잔량 유지: {pos['remaining_volume']:.8f}")
+            surviving.append(pos)
+
+    if len(surviving) != len(positions):
+        budget.save_positions(surviving)
+    return surviving
+
+
+def _execute_buy_fixed(upbit, ticker: str, current_price: float,
+                       sig: dict, budget: BudgetManager, exchange_vol_before: float):
+    """매수 실행 후 신규 포지션을 positions 리스트에 append."""
+    settings = budget.settings
+    amount = budget.order_amount()
+    log.info(f"💰 [fixed] 매수 시도: {amount:,.0f}원 (현재가 {current_price:,.0f})")
+
+    result = api.buy_market_order(upbit, ticker, amount)
+    if not result:
+        log.error("매수 주문 실패 — 포지션 미생성")
+        return
+
+    uuid = result.get("uuid") if isinstance(result, dict) else None
+    if uuid:
+        api.wait_for_fill(upbit, uuid, timeout_sec=5.0)
+    else:
+        time.sleep(0.8)
+
+    coin_info_after = api.get_coin_balance(upbit, ticker)
+    exchange_vol_after = coin_info_after["balance"]
+    volume_purchased = exchange_vol_after - exchange_vol_before
+    if volume_purchased <= 0:
+        log.error(f"⚠ 매수 후 잔고 변화 없음 (before={exchange_vol_before}, after={exchange_vol_after}) — 포지션 미생성")
+        return
+
+    exec_price = amount / volume_purchased
+    target_price = exec_price * (1 + settings.FIXED_TP_PCT)
+    ind = sig.get("indicators", {})
+
+    position = {
+        "ticker":           ticker,
+        "strategy_type":    "FIXED",
+        "entry_price":      exec_price,
+        "entry_time":       datetime.now(config.KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "initial_volume":   volume_purchased,
+        "remaining_volume": volume_purchased,
+        "krw_invested":     amount,
+        "target_price":     target_price,
+        "entry_atr":        float(ind.get("atr", 0)),
+    }
+    budget.add_position(position)
+    budget.record_buy(amount)
+
+    rec.record_buy(
+        ticker=ticker, price=exec_price, volume=volume_purchased, amount_krw=amount,
+        reason=sig.get("reason", ""),
+        ma20=ind.get("ma20", 0), ma50=ind.get("ma50", 0), ma200=ind.get("ma200", 0),
+        rsi=ind.get("rsi", 0), atr=ind.get("atr", 0),
+        stop_loss=0,  # fixed 모드는 손절 없음
+    )
+    log.info(f"✅ [fixed] 매수 완료: {exec_price:,.0f}원 × {volume_purchased:.8f} = {amount:,.0f}원 | 목표 +{settings.FIXED_TP_PCT*100:.1f}% = {target_price:,.0f}")
+
+
+def _execute_sell_fixed(upbit, ticker: str, position: dict, safe_volume: float,
+                        current_price: float, budget: BudgetManager) -> float:
+    """단일 fixed 포지션 매도 실행. 실제 체결된 수량을 반환 (정상 매도 후 0이면 실패)."""
+    slip = api.estimate_slippage(ticker, "SELL", current_price)
+    if slip is not None and slip > budget.settings.SLIPPAGE_LIMIT_PCT:
+        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — FIXED_TP 매도 취소")
+        return 0.0
+
+    log.info(f"💸 [fixed] 매도 시도: {safe_volume:.8f}")
+    result = api.sell_market_order(upbit, ticker, safe_volume)
+    if not result:
+        log.error("매도 주문 실패 (FIXED_TP)")
+        return 0.0
+
+    uuid = result.get("uuid") if isinstance(result, dict) else None
+    order_info = api.wait_for_fill(upbit, uuid, timeout_sec=5.0) if uuid else None
+    fill = api.summarize_order_fill(order_info or result)
+    filled_volume = fill["executed_volume"]
+    filled_funds = fill["executed_funds"]
+
+    if filled_volume <= 0:
+        log.warning(f"⚠ 체결 수량 확인 실패/미체결 — 상태 기록 스킵 (uuid={uuid})")
+        return 0.0
+
+    if filled_volume > safe_volume:
+        filled_funds *= safe_volume / filled_volume if filled_funds > 0 else 0
+        filled_volume = safe_volume
+
+    entry_price = position["entry_price"]
+    sold_volume = filled_volume
+    buy_amount  = entry_price * sold_volume
+    sell_amount = filled_funds if filled_funds > 0 else current_price * sold_volume
+    sell_price  = sell_amount / sold_volume if sold_volume > 0 else current_price
+    pnl         = sell_amount - buy_amount
+    pnl_pct     = (sell_price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+    budget.record_sell(buy_amount, sell_amount, "FIXED_TP")
+    rec.record_sell(
+        ticker=ticker, buy_price=entry_price, sell_price=sell_price,
+        volume=sold_volume, buy_amount=buy_amount, sell_amount=sell_amount,
+        pnl=pnl, pnl_pct=pnl_pct, reason="FIXED_TP",
+    )
+    sign = "+" if pnl >= 0 else ""
+    log.info(f"✅ [fixed] FIXED_TP 완료: {sell_price:,.0f}원 × {sold_volume:.8f} | 손익 {sign}{pnl:,.0f}원 ({sign}{pnl_pct*100:.2f}%)")
+    return sold_volume
