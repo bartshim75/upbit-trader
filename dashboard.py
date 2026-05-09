@@ -479,24 +479,17 @@ def render_trade_table(trades_df: pd.DataFrame, key_prefix: str):
         return
 
     # 필터
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2 = st.columns([1, 2])
     types = col1.multiselect(
         "종류",
         options=["매수", "매도"],
         default=["매수", "매도"],
         key=f"{key_prefix}_trade_types",
     )
-    reasons = sorted(trades_df["사유"].dropna().unique().tolist())
-    sel_reasons = col2.multiselect(
-        "사유",
-        options=reasons,
-        default=reasons,
-        key=f"{key_prefix}_trade_reasons",
-    )
-    n_rows = col3.slider("표시 행 수", 10, 500, 50, key=f"{key_prefix}_trade_rows")
+    n_rows = col2.slider("표시 행 수", 10, 500, 50, key=f"{key_prefix}_trade_rows")
 
     f = trades_df.copy()
-    f = f[f["종류"].isin(types) & f["사유"].isin(sel_reasons)]
+    f = f[f["종류"].isin(types)]
     f = f.sort_values("날짜시간_dt", ascending=False).head(n_rows)
 
     show_cols = [
