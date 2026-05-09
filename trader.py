@@ -154,6 +154,9 @@ def run_exit_check(budget: BudgetManager):
         coin_info = api.get_coin_balance(upbit, ticker)
         exchange_vol = coin_info["balance"]
         bot_vol = budget.bot_owned_volume(exchange_vol)
+        positions = _reconcile_positions(positions, bot_vol, budget)
+        if not positions:
+            return
         _check_fixed_exits(upbit, ticker, positions, current_price, bot_vol, budget,
                            context="exit-check")
         return
@@ -394,8 +397,14 @@ def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
     positions = budget.load_positions()
 
     # 1) 매도 평가 (변동성 차단과 무관 — 익절은 항상 처리)
+    positions = _reconcile_positions(positions, bot_vol, budget)
     positions = _check_fixed_exits(upbit, ticker, positions, current_price, bot_vol,
                                    budget, context="cycle")
+
+    # 매도 후 거래소 잔고 재조회: _execute_buy_fixed의 volume_purchased 계산에 사용
+    # (매도 전 exchange_vol을 그대로 쓰면 "bought - sold ≈ 0" 으로 포지션 누락됨)
+    coin_info_post = api.get_coin_balance(upbit, ticker)
+    exchange_vol = coin_info_post["balance"]
 
     # 2) 매수 평가
     if halt_vol:
@@ -431,6 +440,41 @@ def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
     budget.print_status()
 
 
+def _reconcile_positions(positions: list, bot_vol: float, budget: BudgetManager) -> list:
+    """
+    포지션 파일의 총 remaining_volume이 실제 bot_vol보다 크면 phantom 포지션 제거.
+    - 원인: 이전 사이클에서 매도가 반복 실행되어 다른 포지션의 코인을 소진했는데
+            파일 갱신이 누락된 경우 (zombie 포지션).
+    - 전략: 최신 진입 순으로 보존 (오래된 포지션이 zombie일 가능성이 높음).
+    """
+    if not positions:
+        return positions
+    total = sum(float(p.get("remaining_volume", 0)) for p in positions)
+    if total <= bot_vol + 1e-8:
+        return positions
+
+    log.warning(
+        f"⚠ [reconcile] 포지션 파일 총량({total:.8f}) > 봇 보유({bot_vol:.8f}) "
+        f"— {len(positions)}개 중 phantom 정리"
+    )
+    sorted_pos = sorted(positions, key=lambda p: p.get("entry_time", ""), reverse=True)
+    surviving = []
+    remaining = float(bot_vol)
+    for pos in sorted_pos:
+        vol = float(pos.get("remaining_volume", 0))
+        if remaining >= vol - 1e-8:
+            surviving.append(pos)
+            remaining = max(0.0, remaining - vol)
+        else:
+            log.warning(
+                f"  phantom 제거: entry={pos.get('entry_price', 0):.0f}원 "
+                f"vol={vol:.8f} time={pos.get('entry_time', '?')}"
+            )
+    if len(surviving) < len(positions):
+        budget.save_positions(surviving)
+    return surviving
+
+
 def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float,
                        bot_vol: float, budget: BudgetManager, context: str) -> list:
     """
@@ -463,8 +507,10 @@ def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float
 
         sold = _execute_sell_fixed(upbit, ticker, pos, safe_volume, current_price, budget)
         remaining_bot_vol = max(0.0, remaining_bot_vol - sold)
-        if sold + 1e-12 < target_volume:
-            # 부분 체결 → 잔량 유지
+        # 전량 체결 여부: safe_volume 기준으로 판단 (1e-6 이내 오차는 완료로 처리)
+        # target_volume 기준 비교 시 float 정밀도 차이로 잔량 1e-11 DOGE가 남아 무한 재매도됨
+        fully_sold = (sold >= safe_volume - 1e-6) and (safe_volume >= target_volume - 1e-8)
+        if not fully_sold:
             pos["remaining_volume"] = max(0.0, target_volume - sold)
             log.warning(f"  → FIXED_TP 부분 체결, 잔량 유지: {pos['remaining_volume']:.8f}")
             surviving.append(pos)
