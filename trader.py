@@ -440,17 +440,33 @@ def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
     budget.print_status()
 
 
+_MIN_MEANINGFUL_VOL = 1e-6   # 이보다 작은 잔량은 epsilon 오차 잔재 → phantom
+
+
 def _reconcile_positions(positions: list, bot_vol: float, budget: BudgetManager) -> list:
     """
-    포지션 파일의 총 remaining_volume이 실제 bot_vol보다 크면 phantom 포지션 제거.
-    - 원인: 이전 사이클에서 매도가 반복 실행되어 다른 포지션의 코인을 소진했는데
-            파일 갱신이 누락된 경우 (zombie 포지션).
-    - 전략: 최신 진입 순으로 보존 (오래된 포지션이 zombie일 가능성이 높음).
+    두 단계로 phantom 포지션 제거.
+    1) 잔량 < _MIN_MEANINGFUL_VOL : float 정밀도 오차로 남은 잔재 즉시 제거
+    2) 포지션 파일 총량 > bot_vol  : 최신 진입 우선 보존, 초과분 제거
     """
     if not positions:
         return positions
+
+    # ── 1단계: 극소 잔량 제거 ─────────────────────────────
+    tiny = [p for p in positions if float(p.get("remaining_volume", 0)) < _MIN_MEANINGFUL_VOL]
+    if tiny:
+        positions = [p for p in positions if float(p.get("remaining_volume", 0)) >= _MIN_MEANINGFUL_VOL]
+        for p in tiny:
+            log.warning(
+                f"⚠ [reconcile] 극소 잔량 phantom 제거: "
+                f"entry={p.get('entry_price', 0):.0f}원 vol={p.get('remaining_volume')} "
+                f"time={p.get('entry_time', '?')}"
+            )
+        budget.save_positions(positions)
+
+    # ── 2단계: 총량 vs bot_vol 비교 ──────────────────────
     total = sum(float(p.get("remaining_volume", 0)) for p in positions)
-    if total <= bot_vol + 1e-8:
+    if total <= bot_vol + 1e-6:
         return positions
 
     log.warning(
@@ -462,7 +478,7 @@ def _reconcile_positions(positions: list, bot_vol: float, budget: BudgetManager)
     remaining = float(bot_vol)
     for pos in sorted_pos:
         vol = float(pos.get("remaining_volume", 0))
-        if remaining >= vol - 1e-8:
+        if remaining >= vol - 1e-6:
             surviving.append(pos)
             remaining = max(0.0, remaining - vol)
         else:
