@@ -507,11 +507,12 @@ def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float
 
     for pos in positions:
         decision = strategy.evaluate_exit(pos, current_price, None, settings)
-        if decision["action"] != "FIXED_TP":
+        action = decision["action"]
+        if action not in ("FIXED_TP", "FIXED_SL"):
             surviving.append(pos)
             continue
 
-        log.info(f"[{context}/fixed] {decision['action']} | {decision['reason']}")
+        log.info(f"[{context}/fixed] {action} | {decision['reason']}")
         target_volume = pos.get("remaining_volume", 0)
         safe_volume = min(target_volume, remaining_bot_vol)
         if safe_volume <= 0:
@@ -521,14 +522,14 @@ def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float
         if safe_volume < target_volume:
             log.warning(f"⚠ 안전 캡 적용: 목표={target_volume:.8f} → 실제={safe_volume:.8f}")
 
-        sold = _execute_sell_fixed(upbit, ticker, pos, safe_volume, current_price, budget)
+        sold = _execute_sell_fixed(upbit, ticker, pos, safe_volume, current_price, budget, action=action)
         remaining_bot_vol = max(0.0, remaining_bot_vol - sold)
         # 전량 체결 여부: safe_volume 기준으로 판단 (1e-6 이내 오차는 완료로 처리)
         # target_volume 기준 비교 시 float 정밀도 차이로 잔량 1e-11 DOGE가 남아 무한 재매도됨
         fully_sold = (sold >= safe_volume - 1e-6) and (safe_volume >= target_volume - 1e-8)
         if not fully_sold:
             pos["remaining_volume"] = max(0.0, target_volume - sold)
-            log.warning(f"  → FIXED_TP 부분 체결, 잔량 유지: {pos['remaining_volume']:.8f}")
+            log.warning(f"  → {action} 부분 체결, 잔량 유지: {pos['remaining_volume']:.8f}")
             surviving.append(pos)
 
     if len(surviving) != len(positions):
@@ -590,17 +591,20 @@ def _execute_buy_fixed(upbit, ticker: str, current_price: float,
 
 
 def _execute_sell_fixed(upbit, ticker: str, position: dict, safe_volume: float,
-                        current_price: float, budget: BudgetManager) -> float:
+                        current_price: float, budget: BudgetManager, action: str = "FIXED_TP") -> float:
     """단일 fixed 포지션 매도 실행. 실제 체결된 수량을 반환 (정상 매도 후 0이면 실패)."""
     slip = api.estimate_slippage(ticker, "SELL", current_price)
     if slip is not None and slip > budget.settings.SLIPPAGE_LIMIT_PCT:
-        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — FIXED_TP 매도 취소")
-        return 0.0
+        if action == "FIXED_SL":
+            log.warning(f"⚠ 슬리피지 {slip*100:+.2f}% 이지만 FIXED_SL → 강제 매도")
+        else:
+            log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — {action} 매도 취소")
+            return 0.0
 
-    log.info(f"💸 [fixed] 매도 시도: {safe_volume:.8f}")
+    log.info(f"💸 [fixed] 매도 시도: {safe_volume:.8f} ({action})")
     result = api.sell_market_order(upbit, ticker, safe_volume)
     if not result:
-        log.error("매도 주문 실패 (FIXED_TP)")
+        log.error(f"매도 주문 실패 ({action})")
         return 0.0
 
     uuid = result.get("uuid") if isinstance(result, dict) else None
@@ -625,12 +629,12 @@ def _execute_sell_fixed(upbit, ticker: str, position: dict, safe_volume: float,
     pnl         = sell_amount - buy_amount
     pnl_pct     = (sell_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
-    budget.record_sell(buy_amount, sell_amount, "FIXED_TP")
+    budget.record_sell(buy_amount, sell_amount, action)
     rec.record_sell(
         ticker=ticker, buy_price=entry_price, sell_price=sell_price,
         volume=sold_volume, buy_amount=buy_amount, sell_amount=sell_amount,
-        pnl=pnl, pnl_pct=pnl_pct, reason="FIXED_TP",
+        pnl=pnl, pnl_pct=pnl_pct, reason=action,
     )
     sign = "+" if pnl >= 0 else ""
-    log.info(f"✅ [fixed] FIXED_TP 완료: {sell_price:,.0f}원 × {sold_volume:.8f} | 손익 {sign}{pnl:,.0f}원 ({sign}{pnl_pct*100:.2f}%)")
+    log.info(f"✅ [fixed] {action} 완료: {sell_price:,.0f}원 × {sold_volume:.8f} | 손익 {sign}{pnl:,.0f}원 ({sign}{pnl_pct*100:.2f}%)")
     return sold_volume

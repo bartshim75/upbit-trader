@@ -172,13 +172,24 @@ def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame, settin
 def _evaluate_exit_fixed(position: dict, current_price: float, settings=config) -> dict:
     """
     Fixed-TP 모드: 매수가 +FIXED_TP_PCT 도달 시에만 전량 매도.
-    손절/트레일링/추세이탈 없음 — 가격이 끝없이 빠져도 그냥 보유.
-    반환: {action: "FIXED_TP" | "HOLD", sell_ratio, reason, indicators}
+    손절 추가: 매수가 대비 FIXED_SL_PCT 이하로 하락 시 전량 손절.
+    반환: {action: "FIXED_TP" | "FIXED_SL" | "HOLD", sell_ratio, reason, indicators}
     """
     entry_price = position["entry_price"]
     pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
     target = entry_price * (1 + settings.FIXED_TP_PCT)
-    out = {"action": "HOLD", "sell_ratio": 0.0, "indicators": {"pnl_pct": pnl_pct, "target": target}}
+    sl_target = entry_price * (1 + settings.FIXED_SL_PCT)
+    out = {"action": "HOLD", "sell_ratio": 0.0, "indicators": {"pnl_pct": pnl_pct, "target": target, "sl_target": sl_target}}
+
+    # 손절 체크
+    if pnl_pct <= settings.FIXED_SL_PCT:
+        return {
+            "action": "FIXED_SL",
+            "sell_ratio": 1.0,
+            "reason": (f"FIXED_SL {pnl_pct*100:.2f}% (매수가={entry_price:,.0f} → "
+                       f"현재가={current_price:,.0f} ≤ 손절가={sl_target:,.0f})"),
+            "indicators": out["indicators"],
+        }
 
     if current_price >= target:
         return {
@@ -189,7 +200,7 @@ def _evaluate_exit_fixed(position: dict, current_price: float, settings=config) 
             "indicators": out["indicators"],
         }
 
-    out["reason"] = f"보유중 ({pnl_pct*100:+.2f}%, 목표 {target:,.0f})"
+    out["reason"] = f"보유중 ({pnl_pct*100:+.2f}%, 목표 {target:,.0f}, 손절 {sl_target:,.0f})"
     return out
 
 

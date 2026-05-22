@@ -109,6 +109,7 @@ class MarketSettings:
     BASELINE_FILE: str
     EXIT_STRATEGY: str    # "trailing" (기존) | "fixed" (+FIXED_TP_PCT 정액익절, 다중포지션)
     FIXED_TP_PCT: float
+    FIXED_SL_PCT: float
 
 
 # ── 업비트 API ──────────────────────────────────────
@@ -138,6 +139,7 @@ TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.018)
 # "fixed"    : +FIXED_TP_PCT 정액 익절만 (손절/트레일링 없음, 다중 포지션 허용)
 EXIT_STRATEGY = env_str("EXIT_STRATEGY", "trailing")
 FIXED_TP_PCT  = env_float("FIXED_TP_PCT", 0.03)
+FIXED_SL_PCT  = env_float("FIXED_SL_PCT", -0.08)
 
 # ── 일일 리스크 한도 ─────────────────────────────────
 DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
@@ -199,6 +201,7 @@ LOG_FILE       = "trader.log"
 # ── BTC 매도 전략 오버라이드 ─────────────────────────
 BTC_EXIT_STRATEGY = env_str  ("BTC_EXIT_STRATEGY", EXIT_STRATEGY)
 BTC_FIXED_TP_PCT  = env_float("BTC_FIXED_TP_PCT",  FIXED_TP_PCT)
+BTC_FIXED_SL_PCT  = env_float("BTC_FIXED_SL_PCT",  FIXED_SL_PCT)
 
 
 def _ticker_suffix(ticker: str) -> str:
@@ -258,6 +261,7 @@ def _primary_market() -> MarketSettings:
         BASELINE_FILE=BASELINE_FILE,
         EXIT_STRATEGY=BTC_EXIT_STRATEGY,
         FIXED_TP_PCT=BTC_FIXED_TP_PCT,
+        FIXED_SL_PCT=BTC_FIXED_SL_PCT,
     )
 
 
@@ -324,6 +328,7 @@ DOGE_API_ERROR_LIMIT = API_ERROR_LIMIT
 
 DOGE_EXIT_STRATEGY = env_str  ("DOGE_EXIT_STRATEGY", EXIT_STRATEGY)
 DOGE_FIXED_TP_PCT  = env_float("DOGE_FIXED_TP_PCT",  FIXED_TP_PCT)
+DOGE_FIXED_SL_PCT  = env_float("DOGE_FIXED_SL_PCT",  FIXED_SL_PCT)
 
 
 def _doge_market() -> MarketSettings:
@@ -380,6 +385,7 @@ def _doge_market() -> MarketSettings:
         BASELINE_FILE=f"baseline_{suffix}.json",
         EXIT_STRATEGY=DOGE_EXIT_STRATEGY,
         FIXED_TP_PCT=DOGE_FIXED_TP_PCT,
+        FIXED_SL_PCT=DOGE_FIXED_SL_PCT,
     )
 
 
@@ -430,6 +436,8 @@ def _validate_market(market: MarketSettings):
         raise ValueError(f"❌ {market.name}: EXIT_STRATEGY는 'trailing' 또는 'fixed' 여야 합니다. (현재: {market.EXIT_STRATEGY})")
     if market.FIXED_TP_PCT <= 0:
         raise ValueError(f"❌ {market.name}: FIXED_TP_PCT는 0보다 커야 합니다. (현재: {market.FIXED_TP_PCT})")
+    if market.FIXED_SL_PCT >= 0:
+        raise ValueError(f"❌ {market.name}: FIXED_SL_PCT는 음수여야 합니다. (현재: {market.FIXED_SL_PCT})")
 
 
 def validate():
