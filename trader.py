@@ -61,7 +61,7 @@ def run_trade_cycle(budget: BudgetManager):
 
     # ── fixed 모드: 다중 포지션 분기 ────────────────
     if settings.EXIT_STRATEGY == "fixed":
-        _run_fixed_cycle(upbit, ticker, df, current_price, exchange_vol, bot_vol, halt_vol, budget)
+        _run_fixed_cycle(upbit, ticker, current_price, exchange_vol, bot_vol, halt_vol, budget)
         log.info("━━━ 매매 사이클 종료 ━━━\n")
         return
 
@@ -384,7 +384,7 @@ def _execute_sell(upbit, ticker: str, position: dict, bot_vol: float,
 
 
 # ── Fixed 모드 (다중 포지션 / +FIXED_TP_PCT 정액익절) ───────────
-def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
+def _run_fixed_cycle(upbit, ticker: str, current_price: float,
                      exchange_vol: float, bot_vol: float, halt_vol,
                      budget: BudgetManager):
     """
@@ -418,13 +418,6 @@ def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
         budget.print_status()
         return
 
-    sig = strategy.get_buy_signal(df, current_price, settings)
-    log.info(f"현재가={current_price:,.0f} | {sig['reason']}")
-
-    if sig["signal"] != "BUY":
-        budget.print_status()
-        return
-
     krw = api.get_krw_balance(upbit)
     if not budget.can_buy(krw):
         budget.print_status()
@@ -436,7 +429,9 @@ def _run_fixed_cycle(upbit, ticker: str, df, current_price: float,
         budget.print_status()
         return
 
-    _execute_buy_fixed(upbit, ticker, current_price, sig, budget, exchange_vol)
+    log.info(f"현재가={current_price:,.0f} | DCA 정시 매수")
+    _execute_buy_fixed(upbit, ticker, current_price,
+                       {"indicators": {}, "reason": "DCA 정시 매수"}, budget, exchange_vol)
     budget.print_status()
 
 
@@ -508,7 +503,7 @@ def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float
     for pos in positions:
         decision = strategy.evaluate_exit(pos, current_price, None, settings)
         action = decision["action"]
-        if action not in ("FIXED_TP", "FIXED_SL"):
+        if action != "FIXED_TP":
             surviving.append(pos)
             continue
 
@@ -595,11 +590,8 @@ def _execute_sell_fixed(upbit, ticker: str, position: dict, safe_volume: float,
     """단일 fixed 포지션 매도 실행. 실제 체결된 수량을 반환 (정상 매도 후 0이면 실패)."""
     slip = api.estimate_slippage(ticker, "SELL", current_price)
     if slip is not None and slip > budget.settings.SLIPPAGE_LIMIT_PCT:
-        if action == "FIXED_SL":
-            log.warning(f"⚠ 슬리피지 {slip*100:+.2f}% 이지만 FIXED_SL → 강제 매도")
-        else:
-            log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — {action} 매도 취소")
-            return 0.0
+        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {budget.settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — {action} 매도 취소")
+        return 0.0
 
     log.info(f"💸 [fixed] 매도 시도: {safe_volume:.8f} ({action})")
     result = api.sell_market_order(upbit, ticker, safe_volume)

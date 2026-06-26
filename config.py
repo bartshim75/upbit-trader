@@ -137,9 +137,9 @@ TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.018)
 # ── 매도 전략 모드 (글로벌 기본값, per-market 오버라이드 가능) ───
 # "trailing" : 기존 동작 (TP1/TP2/트레일링/손절/추세이탈, 동시 1포지션)
 # "fixed"    : +FIXED_TP_PCT 정액 익절만 (손절/트레일링 없음, 다중 포지션 허용)
-EXIT_STRATEGY = env_str("EXIT_STRATEGY", "trailing")
-FIXED_TP_PCT  = env_float("FIXED_TP_PCT", 0.03)
-FIXED_SL_PCT  = env_float("FIXED_SL_PCT", -0.08)
+EXIT_STRATEGY = env_str("EXIT_STRATEGY", "fixed")
+FIXED_TP_PCT  = env_float("FIXED_TP_PCT", 0.02)   # BTC: +2% 익절
+FIXED_SL_PCT  = env_float("FIXED_SL_PCT", -0.99)  # 사용 안 함 (손절 없음)
 
 # ── 일일 리스크 한도 ─────────────────────────────────
 DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
@@ -327,7 +327,7 @@ DOGE_SLIPPAGE_LIMIT_PCT = env_float("DOGE_SLIPPAGE_LIMIT_PCT", 0.008)
 DOGE_API_ERROR_LIMIT = API_ERROR_LIMIT
 
 DOGE_EXIT_STRATEGY = env_str  ("DOGE_EXIT_STRATEGY", EXIT_STRATEGY)
-DOGE_FIXED_TP_PCT  = env_float("DOGE_FIXED_TP_PCT",  FIXED_TP_PCT)
+DOGE_FIXED_TP_PCT  = env_float("DOGE_FIXED_TP_PCT",  0.03)          # DOGE: +3% 익절
 DOGE_FIXED_SL_PCT  = env_float("DOGE_FIXED_SL_PCT",  FIXED_SL_PCT)
 
 
