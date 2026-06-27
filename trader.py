@@ -393,7 +393,6 @@ def _run_fixed_cycle(upbit, ticker: str, current_price: float,
       2) 변동성 차단 아니고, 일일 한도 안 걸렸으면, 매수 신호 평가
       3) 매수 가능(잔고 충분 + POSITION_PCT 한도)하면 신규 포지션 추가
     """
-    settings = budget.settings
     positions = budget.load_positions()
 
     # 1) 매도 평가 (변동성 차단과 무관 — 익절은 항상 처리)
@@ -420,12 +419,6 @@ def _run_fixed_cycle(upbit, ticker: str, current_price: float,
 
     krw = api.get_krw_balance(upbit)
     if not budget.can_buy(krw):
-        budget.print_status()
-        return
-
-    slip = api.estimate_slippage(ticker, "BUY", current_price)
-    if slip is not None and slip > settings.SLIPPAGE_LIMIT_PCT:
-        log.warning(f"⛔ 슬리피지 초과: {slip*100:+.2f}% > {settings.SLIPPAGE_LIMIT_PCT*100:.2f}% — 매수 취소")
         budget.print_status()
         return
 

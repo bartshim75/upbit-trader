@@ -10,6 +10,7 @@ import time
 import config
 from budget_manager import BudgetManager
 from trader import run_trade_cycle, run_exit_check
+from log_rotator import rotate_logs
 from logger import get_logger
 
 log = get_logger("main")
@@ -50,9 +51,10 @@ def main():
         _log_market_settings(market)
     log.info("=" * 60)
 
-    schedule.every().day.at("18:08").do(job, budgets=budgets)   # KST 03:08
+    schedule.every().day.at("18:08").do(job, budgets=budgets)              # KST 03:08 매수
     schedule.every(config.EXIT_CHECK_INTERVAL_MIN).minutes.do(exit_job, budgets=budgets)
-    log.info(f"⏰ 스케줄 등록 — 매일 18:08 UTC(=KST 03:08) 매수 + {config.EXIT_CHECK_INTERVAL_MIN}분마다 익절 체크")
+    schedule.every().monday.at("00:00").do(rotate_logs)                    # KST 09:00 로그 로테이션 (짝수 주차)
+    log.info(f"⏰ 스케줄 등록 — 매일 18:08 UTC(=KST 03:08) 매수 + {config.EXIT_CHECK_INTERVAL_MIN}분마다 익절 체크 + 짝수주 월요일 로그 로테이션")
 
     while True:
         schedule.run_pending()
