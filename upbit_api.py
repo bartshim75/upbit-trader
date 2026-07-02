@@ -4,12 +4,24 @@ pyupbit 라이브러리를 래핑하여 에러 처리 / 재시도 / 슬리피지
 """
 import time
 from typing import Optional
+import requests
 import pyupbit
 import pandas as pd
 import config
 from logger import get_logger
 
 log = get_logger(__name__)
+
+_ORIGINAL_REQUEST = requests.sessions.Session.request
+
+
+def _request_with_default_timeout(self, method, url, **kwargs):
+    """pyupbit 내부 requests 호출이 무기한 대기하지 않도록 기본 timeout 적용."""
+    kwargs.setdefault("timeout", config.API_TIMEOUT_SEC)
+    return _ORIGINAL_REQUEST(self, method, url, **kwargs)
+
+
+requests.sessions.Session.request = _request_with_default_timeout
 
 
 def get_upbit_client():
