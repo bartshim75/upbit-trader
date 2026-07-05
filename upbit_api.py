@@ -17,7 +17,8 @@ _ORIGINAL_REQUEST = requests.sessions.Session.request
 
 def _request_with_default_timeout(self, method, url, **kwargs):
     """pyupbit 내부 requests 호출이 무기한 대기하지 않도록 기본 timeout 적용."""
-    kwargs.setdefault("timeout", config.API_TIMEOUT_SEC)
+    if kwargs.get("timeout") is None:
+        kwargs["timeout"] = config.API_TIMEOUT_SEC
     return _ORIGINAL_REQUEST(self, method, url, **kwargs)
 
 
@@ -36,10 +37,12 @@ def get_ohlcv(ticker: str, interval: str = "minute60", count: int = 250) -> pd.D
             df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
             if df is not None and len(df) >= 30:
                 return df
+            rows = 0 if df is None else len(df)
+            log.warning(f"캔들 조회 데이터 부족 ({attempt+1}/3): {ticker} rows={rows}")
         except Exception as e:
-            log.warning(f"캔들 조회 실패 ({attempt+1}/3): {e}")
-            time.sleep(2)
-    log.error("캔들 데이터 조회 최종 실패")
+            log.warning(f"캔들 조회 실패 ({attempt+1}/3): {ticker} {type(e).__name__}: {e}")
+        time.sleep(2)
+    log.error(f"캔들 데이터 조회 최종 실패: {ticker}")
     return pd.DataFrame()
 
 

@@ -37,7 +37,7 @@ def run_trade_cycle(budget: BudgetManager):
 
     # ── 1) 시세 / 지표 ─────────────────────────────
     df = api.get_ohlcv(ticker, interval="minute60", count=settings.CANDLE_COUNT)
-    if df.empty:
+    if df.empty and settings.EXIT_STRATEGY != "fixed":
         log.error("캔들 데이터 없음 — 사이클 스킵")
         return
 
@@ -46,7 +46,11 @@ def run_trade_cycle(budget: BudgetManager):
         log.error("현재가 조회 실패 — 사이클 스킵")
         return
 
-    halt_vol = strategy.is_volatility_halt(df, settings)
+    if df.empty:
+        halt_vol = None
+        log.warning("⚠ 캔들 데이터 없음 — fixed DCA는 변동성 차단 체크 없이 계속 진행")
+    else:
+        halt_vol = strategy.is_volatility_halt(df, settings)
 
     # ── 2) 잔고 / baseline ─────────────────────────
     coin_info     = api.get_coin_balance(upbit, ticker)
