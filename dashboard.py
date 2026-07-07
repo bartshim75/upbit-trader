@@ -16,6 +16,7 @@ dashboard.py — Streamlit 기반 자동매매 모니터링 대시보드 (regime
 """
 import os
 import json
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -30,6 +31,12 @@ import strategy
 import mean_revert as mr
 
 
+BASE_DIR = Path(__file__).resolve().parent
+BRAND_DIR = BASE_DIR / "brand-assets"
+APP_ICON_PATH = BRAND_DIR / "app-icon-upbit-trader.png"
+SERVICE_LOGO_PATH = BRAND_DIR / "service-logo-upbit-trader-light.png"
+
+
 # ── 인증 ─────────────────────────────────────────────
 def auth_gate() -> bool:
     pw_required = bool(config.DASHBOARD_PASSWORD)
@@ -39,7 +46,9 @@ def auth_gate() -> bool:
     if st.session_state.get("auth_ok"):
         return True
 
-    st.title("🔒 Upbit Trader Dashboard")
+    if APP_ICON_PATH.exists():
+        st.image(str(APP_ICON_PATH), width=84)
+    st.title("Upbit Trader Dashboard")
     pw = st.text_input("비밀번호", type="password")
     if st.button("로그인"):
         if pw == config.DASHBOARD_PASSWORD:
@@ -529,7 +538,7 @@ def render_log_tail():
 def main():
     st.set_page_config(
         page_title="Upbit Trader",
-        page_icon="🤖",
+        page_icon=str(APP_ICON_PATH) if APP_ICON_PATH.exists() else "🤖",
         layout="wide",
     )
 
@@ -549,7 +558,12 @@ def main():
 
     # 헤더
     cols = st.columns([4, 1])
-    cols[0].title("🤖 업비트 자동매매 대시보드")
+    with cols[0]:
+        if SERVICE_LOGO_PATH.exists():
+            st.image(str(SERVICE_LOGO_PATH), width=360)
+        else:
+            st.title("Upbit Trader")
+        st.caption("업비트 BTC + DOGE 자동매매 대시보드")
     cols[1].caption(f"마지막 갱신: {datetime.now(config.KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
     trades_df = load_trades_df()
