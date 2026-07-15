@@ -53,7 +53,10 @@ def run_trade_cycle(budget: BudgetManager):
         halt_vol = strategy.is_volatility_halt(df, settings)
 
     # ── 2) 잔고 / baseline ─────────────────────────
-    coin_info     = api.get_coin_balance(upbit, ticker)
+    coin_info = api.get_coin_balance(upbit, ticker)
+    if coin_info is None:
+        log.error("코인 잔고 확인 불가 — 포지션 상태를 보존하고 사이클 스킵")
+        return
     exchange_vol  = coin_info["balance"]
 
     # 최초 1회: baseline 기록 (봇이 시작될 때의 사용자 기존 보유분)
@@ -156,6 +159,9 @@ def run_exit_check(budget: BudgetManager):
             log.warning("[exit-check/fixed] 현재가 조회 실패 — 스킵")
             return
         coin_info = api.get_coin_balance(upbit, ticker)
+        if coin_info is None:
+            log.error("[exit-check/fixed] 코인 잔고 확인 불가 — 포지션 상태를 보존하고 스킵")
+            return
         exchange_vol = coin_info["balance"]
         bot_vol = budget.bot_owned_volume(exchange_vol)
         positions = _reconcile_positions(positions, bot_vol, budget)
@@ -179,6 +185,9 @@ def run_exit_check(budget: BudgetManager):
         return
 
     coin_info    = api.get_coin_balance(upbit, ticker)
+    if coin_info is None:
+        log.error("[exit-check] 코인 잔고 확인 불가 — 포지션 상태를 보존하고 스킵")
+        return
     exchange_vol = coin_info["balance"]
     bot_vol      = budget.bot_owned_volume(exchange_vol)
 
@@ -222,6 +231,9 @@ def _execute_buy(upbit, ticker: str, current_price: float,
 
     # 매수 후 잔고 → 신규 매수 수량 = (after - before)
     coin_info_after = api.get_coin_balance(upbit, ticker)
+    if coin_info_after is None:
+        log.error("⚠ 매수 후 잔고 확인 실패 — 잘못된 수량 기록을 막기 위해 포지션 생성 보류")
+        return
     exchange_vol_after = coin_info_after["balance"]
     volume_purchased = exchange_vol_after - exchange_vol_before
 
@@ -407,6 +419,10 @@ def _run_fixed_cycle(upbit, ticker: str, current_price: float,
     # 매도 후 거래소 잔고 재조회: _execute_buy_fixed의 volume_purchased 계산에 사용
     # (매도 전 exchange_vol을 그대로 쓰면 "bought - sold ≈ 0" 으로 포지션 누락됨)
     coin_info_post = api.get_coin_balance(upbit, ticker)
+    if coin_info_post is None:
+        log.error("[fixed] 매도 후 잔고 확인 불가 — 포지션 상태를 보존하고 신규 매수 스킵")
+        budget.print_status()
+        return
     exchange_vol = coin_info_post["balance"]
 
     # 2) 매수 평가
@@ -437,9 +453,11 @@ _MIN_MEANINGFUL_VOL = 1e-6   # 이보다 작은 잔량은 epsilon 오차 잔재 
 
 def _reconcile_positions(positions: list, bot_vol: float, budget: BudgetManager) -> list:
     """
-    두 단계로 phantom 포지션 제거.
-    1) 잔량 < _MIN_MEANINGFUL_VOL : float 정밀도 오차로 남은 잔재 즉시 제거
-    2) 포지션 파일 총량 > bot_vol  : 최신 진입 우선 보존, 초과분 제거
+    포지션 파일의 극소 잔량만 정리하고 실제 잔고와의 불일치는 경고만 남긴다.
+
+    API 오류·외부 이체·일시적 응답 이상을 phantom 포지션으로 오판할 수 있으므로,
+    실제 잔고가 적다는 이유로 정상 포지션 기록을 자동 삭제하지 않는다.
+    매도 수량은 _check_fixed_exits의 bot_vol 안전 캡에서 별도로 제한한다.
     """
     if not positions:
         return positions
@@ -456,31 +474,14 @@ def _reconcile_positions(positions: list, bot_vol: float, budget: BudgetManager)
             )
         budget.save_positions(positions)
 
-    # ── 2단계: 총량 vs bot_vol 비교 ──────────────────────
+    # 총량과 실제 잔고가 다르더라도 포지션 원장 자체는 보존한다.
     total = sum(float(p.get("remaining_volume", 0)) for p in positions)
-    if total <= bot_vol + 1e-6:
-        return positions
-
-    log.warning(
-        f"⚠ [reconcile] 포지션 파일 총량({total:.8f}) > 봇 보유({bot_vol:.8f}) "
-        f"— {len(positions)}개 중 phantom 정리"
-    )
-    sorted_pos = sorted(positions, key=lambda p: p.get("entry_time", ""), reverse=True)
-    surviving = []
-    remaining = float(bot_vol)
-    for pos in sorted_pos:
-        vol = float(pos.get("remaining_volume", 0))
-        if remaining >= vol - 1e-6:
-            surviving.append(pos)
-            remaining = max(0.0, remaining - vol)
-        else:
-            log.warning(
-                f"  phantom 제거: entry={pos.get('entry_price', 0):.0f}원 "
-                f"vol={vol:.8f} time={pos.get('entry_time', '?')}"
-            )
-    if len(surviving) < len(positions):
-        budget.save_positions(surviving)
-    return surviving
+    if total > bot_vol + 1e-6:
+        log.error(
+            f"⚠ [reconcile] 포지션 파일 총량({total:.8f}) > 봇 보유({bot_vol:.8f}) "
+            f"— 자동 삭제하지 않고 {len(positions)}개 상태를 모두 보존"
+        )
+    return positions
 
 
 def _check_fixed_exits(upbit, ticker: str, positions: list, current_price: float,
@@ -548,6 +549,9 @@ def _execute_buy_fixed(upbit, ticker: str, current_price: float,
         time.sleep(0.8)
 
     coin_info_after = api.get_coin_balance(upbit, ticker)
+    if coin_info_after is None:
+        log.error("⚠ [fixed] 매수 후 잔고 확인 실패 — 잘못된 수량 기록을 막기 위해 포지션 생성 보류")
+        return
     exchange_vol_after = coin_info_after["balance"]
     volume_purchased = exchange_vol_after - exchange_vol_before
     if volume_purchased <= 0:

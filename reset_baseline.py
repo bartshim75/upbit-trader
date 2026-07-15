@@ -58,6 +58,8 @@ def main():
     for market in markets:
         bm = BudgetManager(market)
         coin = api.get_coin_balance(upbit, market.TICKER)
+        if coin is None:
+            raise RuntimeError(f"{market.TICKER} 잔고 조회 실패 — baseline을 변경하지 않습니다")
         cur_vol = coin["balance"]
         bm.save_baseline(cur_vol, note=f"수동 재설정: {market.TICKER} 잔고 {cur_vol:.8f} 보호")
         print(f"✅ [{market.TICKER}] baseline = {cur_vol:.8f} 으로 설정 (현재 거래소 잔고).")

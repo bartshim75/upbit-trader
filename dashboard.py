@@ -137,6 +137,8 @@ def load_balances(ticker: str):
     upbit = api.get_upbit_client()
     krw = api.get_krw_balance(upbit)
     coin = api.get_coin_balance(upbit, ticker)
+    if coin is None:
+        raise RuntimeError(f"{ticker} 코인 잔고 조회 실패")
     return krw, coin
 
 

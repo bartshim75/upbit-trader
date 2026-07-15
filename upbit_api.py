@@ -109,20 +109,32 @@ def get_krw_balance(upbit) -> float:
     return 0.0
 
 
-def get_coin_balance(upbit, ticker: str) -> dict:
-    """코인 보유량 조회 → {"balance": 수량, "avg_buy_price": 평균매수가}"""
+def get_coin_balance(upbit, ticker: str) -> Optional[dict]:
+    """
+    코인 보유량 조회 → {"balance": 수량, "avg_buy_price": 평균매수가}.
+
+    정상 응답에 해당 통화가 없으면 실제 미보유이므로 0을 반환한다.
+    API 오류는 실제 0과 구분할 수 있도록 3회 재시도 후 None을 반환한다.
+    """
     currency = ticker.split("-")[1]
-    try:
-        balances = upbit.get_balances()
-        for b in balances:
-            if b["currency"] == currency:
-                return {
-                    "balance": float(b["balance"]),
-                    "avg_buy_price": float(b["avg_buy_price"]),
-                }
-    except Exception as e:
-        log.error(f"코인 잔고 조회 실패: {e}")
-    return {"balance": 0.0, "avg_buy_price": 0.0}
+    for attempt in range(3):
+        try:
+            balances = upbit.get_balances()
+            if not isinstance(balances, list):
+                raise ValueError(f"예상하지 못한 잔고 응답 형식: {type(balances).__name__}")
+            for b in balances:
+                if b.get("currency") == currency:
+                    return {
+                        "balance": float(b.get("balance", 0)),
+                        "avg_buy_price": float(b.get("avg_buy_price", 0)),
+                    }
+            return {"balance": 0.0, "avg_buy_price": 0.0}
+        except Exception as e:
+            log.warning(f"코인 잔고 조회 실패 ({attempt+1}/3): {ticker} {type(e).__name__}: {e}")
+            if attempt < 2:
+                time.sleep(1)
+    log.error(f"코인 잔고 조회 최종 실패: {ticker} — 실제 0으로 간주하지 않고 상태 변경을 중단합니다")
+    return None
 
 
 def buy_market_order(upbit, ticker: str, amount_krw: float) -> Optional[dict]:
