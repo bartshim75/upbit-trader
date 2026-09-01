@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0d0f">
+  <title>Upbit Trader</title>
+  <link rel="icon" href="/assets/app-icon-upbit-trader.png">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <main id="login-view" class="login-view" hidden>
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="login-mark">
+        <img src="/assets/app-icon-upbit-trader.png" alt="">
+        <span>PRIVATE TERMINAL</span>
+      </div>
+      <p class="eyebrow">UPBIT / OPERATIONS</p>
+      <h1 id="login-title">시장에 들어가기 전,<br>신원을 확인합니다.</h1>
+      <p class="login-copy">자동매매 상태와 계좌 정보가 포함된 보호된 대시보드입니다.</p>
+      <form id="login-form" autocomplete="on">
+        <label for="password">대시보드 비밀번호</label>
+        <div class="password-row">
+          <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+          <button type="submit">접속</button>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+    </section>
+  </main>
+
+  <div id="loading-view" class="loading-view">
+    <img src="/assets/app-icon-upbit-trader.png" alt="">
+    <div class="loading-line"><span></span></div>
+    <p>MARKET DATA SYNC</p>
+  </div>
+
+  <div id="app-view" class="app-shell" hidden>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Upbit Trader 홈">
+        <img src="/assets/app-icon-upbit-trader.png" alt="">
+        <span><strong>UPBIT</strong> TRADER</span>
+      </a>
+      <div class="topbar-actions">
+        <div class="sync-state">
+          <span id="sync-dot" class="sync-dot"></span>
+          <span id="last-updated">데이터 준비 중</span>
+        </div>
+        <button id="refresh-button" class="icon-button" type="button" aria-label="지금 새로고침" title="지금 새로고침">↻</button>
+        <button id="logout-button" class="text-button" type="button">로그아웃</button>
+      </div>
+    </header>
+
+    <nav id="market-tabs" class="market-tabs" aria-label="거래 종목"></nav>
+
+    <main class="dashboard">
+      <div id="global-warnings" class="warning-stack"></div>
+      <section id="market-hero" class="market-hero"></section>
+      <section id="kpi-grid" class="kpi-grid" aria-label="핵심 지표"></section>
+      <section id="position-panel"></section>
+      <section id="market-panel"></section>
+      <section id="chart-panel"></section>
+      <section id="trade-panel"></section>
+      <section id="log-panel"></section>
+      <footer id="market-footer" class="market-footer"></footer>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

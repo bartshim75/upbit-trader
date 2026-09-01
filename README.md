@@ -180,6 +180,10 @@ sudo systemctl status upbit-dashboard
 sudo systemctl restart upbit-dashboard
 journalctl -u upbit-dashboard -f
 
+# Nginx
+sudo systemctl status nginx
+sudo nginx -t
+
 # baseline (사용자 기존 자산 보호)
 python reset_baseline.py --show                 # 활성 종목 baseline 확인
 python reset_baseline.py                        # 활성 종목 현재 잔고로 재설정 (= 모두 보호)
@@ -201,7 +205,7 @@ cat baseline.json
 [setup.sh](setup.sh)에서 두 가지 장치를 걸어둡니다:
 
 1. **`Restart=always` + `RestartSec=10`** — 프로세스가 죽으면 10초 후 systemd가 자동 재시작.
-2. **`systemctl enable upbit-trader upbit-dashboard`** — VM 부팅 시 systemd가 두 서비스를 자동 시작.
+2. **`systemctl enable upbit-trader upbit-dashboard nginx`** — VM 부팅 시 트레이더, API, Nginx가 자동 시작.
 
 | 상황 | 동작 |
 |------|------|
@@ -214,12 +218,13 @@ cat baseline.json
 ```bash
 sudo systemctl status upbit-trader
 sudo systemctl status upbit-dashboard
+sudo systemctl status nginx
 ```
 
 `active (running)` + `enabled` 두 가지가 모두 표시되면 OK. 만약 `disabled`면 한 번만:
 
 ```bash
-sudo systemctl enable upbit-trader upbit-dashboard
+sudo systemctl enable upbit-trader upbit-dashboard nginx
 ```
 
 ---
@@ -229,10 +234,13 @@ sudo systemctl enable upbit-trader upbit-dashboard
 브라우저에서 거래 내역 / 손익 / 포지션을 실시간으로 확인할 수 있습니다.
 
 ### 접속 방법
-1. GCP 방화벽에서 `8501` 포트 개방 (아래 "GCP 방화벽 설정" 참고)
+1. GCP 방화벽에서 HTTP `80` 포트 개방 (아래 "GCP 방화벽 설정" 참고)
 2. `.env`에 `DASHBOARD_PASSWORD=강력한비밀번호` 입력 후 `sudo systemctl restart upbit-dashboard`
-3. 브라우저: `http://<VM_외부_IP>:8501`
-4. 비밀번호 입력 후 대시보드 표시 (30초마다 자동 갱신)
+3. `bash setup.sh`를 다시 실행해 Nginx/FastAPI 서비스를 반영
+4. 브라우저: `http://<VM_외부_IP>`
+5. 비밀번호 입력 후 대시보드 표시 (`DASHBOARD_REFRESH_SEC` 주기로 자동 갱신)
+
+Nginx가 HTML/CSS/JS를 직접 제공하고 `/api`만 `127.0.0.1:8501`의 FastAPI로 전달합니다. 따라서 GCP 방화벽에서 `8501` 포트는 열지 않습니다.
 
 ### 표시 항목
 - **KPI 6개**: 배정 예산 / 봇 운용 자산 / 누적 손익 / 오늘 손익 / 승률 / 거래 상태
@@ -242,14 +250,14 @@ sudo systemctl enable upbit-trader upbit-dashboard
 - **거래 내역**: 정렬/필터 가능한 표 + CSV 다운로드
 - **로그**: `trader.log` 마지막 50줄
 
-### GCP 방화벽 설정 (대시보드 포트 개방)
+### GCP 방화벽 설정 (HTTP 포트 개방)
 1. https://console.cloud.google.com/networking/firewalls/list
 2. **방화벽 규칙 만들기** 클릭
 3. 입력값:
-   - 이름: `allow-dashboard`
+   - 이름: `allow-dashboard-http`
    - 대상: `네트워크의 모든 인스턴스`
    - 소스 IPv4 범위: `0.0.0.0/0` (전 세계 허용 — 비밀번호로 보호)
-   - 프로토콜/포트: TCP `8501`
+   - 프로토콜/포트: TCP `80`
 4. **만들기**
 
 ### Cloudflare 도메인 매핑 (선택, 추후)
@@ -268,13 +276,11 @@ sudo systemctl enable upbit-trader upbit-dashboard
 3. 잠시 대기 (1~5분) 후 `https://trader.mybot.com` 접속
 
 **Cloudflare 추가 설정 (보안 강화)**:
-- SSL/TLS → 모드: `Full` (Cloudflare ↔ VM 자체 HTTPS는 불필요, VM은 8501 HTTP 그대로)
-- Rules → **Origin Rules**에서 포트 변경:
-  - When: Hostname = `trader.mybot.com`
-  - Then: Rewrite to port `8501`
+- HTTPS는 Cloudflare Tunnel 또는 Origin Certificate 구성 권장
+- Origin 포트는 기본 HTTP `80`을 사용하므로 별도 포트 Rewrite가 필요하지 않음
 - (옵션) **Zero Trust** → Application 추가하여 Google/이메일 인증으로 추가 보호
 
-이렇게 하면 GCP 방화벽 8501 포트는 Cloudflare IP 대역만 허용하도록 제한할 수 있어서 직접 접근이 차단됩니다.
+Cloudflare를 사용하면 GCP 방화벽의 80 포트를 Cloudflare IP 대역으로 제한해 직접 접근을 차단할 수 있습니다.
 
 ---
 

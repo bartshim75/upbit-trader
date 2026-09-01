@@ -1,643 +1,598 @@
-"""
-dashboard.py — Streamlit 기반 자동매매 모니터링 대시보드 (regime-aware)
+"""FastAPI backend for the lightweight HTML dashboard.
 
-실행:
-  streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
+Run locally:
+  uvicorn dashboard:app --host 127.0.0.1 --port 8501
 
-기능:
-  - 핵심 지표(KPI) 6개
-  - 현재 포지션 카드 (TREND / BB 모드별 자동 분기)
-  - 1H 시장 상태 + Regime 표시 + 전략별 매수 조건 체크리스트
-  - 누적/일별 손익 차트
-  - 거래내역 표 (필터/정렬/CSV 다운로드)
-  - 최근 로그 50줄
-  - 자동 새로고침
-  - 비밀번호 보호
+Nginx is the public entry point in production. The API process only reads trading
+state and calls Upbit read endpoints; it never places or cancels orders.
 """
-import os
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import io
 import json
-from pathlib import Path
+import math
+import secrets
+import threading
+import time
 from datetime import datetime, timedelta
-from typing import Optional
+from pathlib import Path
+from typing import Any
 
-import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from streamlit_autorefresh import st_autorefresh
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import config
-import upbit_api as api
-import strategy
 import mean_revert as mr
+import strategy
+import upbit_api as api
 
 
 BASE_DIR = Path(__file__).resolve().parent
+WEB_DIR = BASE_DIR / "web"
 BRAND_DIR = BASE_DIR / "brand-assets"
-APP_ICON_PATH = BRAND_DIR / "app-icon-upbit-trader.png"
-SERVICE_LOGO_PATH = BRAND_DIR / "service-logo-upbit-trader-light.png"
+SESSION_COOKIE = "upbit_dashboard_session"
+SESSION_MAX_AGE_SEC = 12 * 60 * 60
+
+app = FastAPI(
+    title="Upbit Trader Dashboard",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
-# ── 인증 ─────────────────────────────────────────────
-def auth_gate() -> bool:
-    pw_required = bool(config.DASHBOARD_PASSWORD)
-    if not pw_required:
-        return True
-
-    if st.session_state.get("auth_ok"):
-        return True
-
-    if APP_ICON_PATH.exists():
-        st.image(str(APP_ICON_PATH), width=84)
-    st.title("Upbit Trader Dashboard")
-    pw = st.text_input("비밀번호", type="password")
-    if st.button("로그인"):
-        if pw == config.DASHBOARD_PASSWORD:
-            st.session_state["auth_ok"] = True
-            st.rerun()
-        else:
-            st.error("비밀번호가 틀렸습니다.")
-    return False
+class LoginRequest(BaseModel):
+    password: str
 
 
-# ── 데이터 로더 (캐시) ────────────────────────────────
-def _read_json(path: str, label: str) -> Optional[dict]:
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        st.error(f"{label} 로드 실패: {e}")
-        st.stop()
-    if not isinstance(data, dict):
-        st.error(f"{label} 형식 오류: JSON 객체가 아닙니다.")
-        st.stop()
-    return data
+_snapshot_lock = threading.Lock()
+_snapshot_data: dict[str, Any] | None = None
+_snapshot_expires_at = 0.0
 
 
-def _read_json_list(path: str, label: str) -> list:
-    """fixed 모드 positions 파일 (list of dict) 로드. 없으면 [] 반환."""
-    if not os.path.exists(path):
+def _data_path(path: str) -> Path:
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else BASE_DIR / candidate
+
+
+def _read_json_dict(path: str) -> dict[str, Any]:
+    target = _data_path(path)
+    if not target.exists():
+        return {}
+    with target.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: JSON 객체가 아닙니다.")
+    return value
+
+
+def _read_json_list(path: str) -> list[dict[str, Any]]:
+    target = _data_path(path)
+    if not target.exists():
         return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        st.error(f"{label} 로드 실패: {e}")
-        st.stop()
-    if not isinstance(data, list):
-        st.error(f"{label} 형식 오류: JSON 배열이 아닙니다.")
-        st.stop()
-    return data
+    with target.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"{path}: JSON 객체 배열이 아닙니다.")
+    return value
 
 
-def _baseline_volume_or_stop(baseline: Optional[dict]) -> float:
-    if baseline is None:
-        return 0.0
-    try:
-        return float(baseline["volume"])
-    except (KeyError, TypeError, ValueError) as e:
-        st.error(f"baseline.json 형식 오류: volume 값을 읽을 수 없습니다. ({e})")
-        st.stop()
-
-
-@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
-def load_trades_df() -> pd.DataFrame:
-    if not os.path.exists(config.TRADES_FILE):
+def _load_trades() -> pd.DataFrame:
+    target = _data_path(config.TRADES_FILE)
+    if not target.exists():
         return pd.DataFrame()
-    try:
-        df = pd.read_csv(config.TRADES_FILE, encoding="utf-8-sig")
-        if df.empty:
-            return df
-        df["날짜시간_dt"] = pd.to_datetime(df["날짜시간"], errors="coerce")
-        # 손익(원) → 숫자
-        if "손익(원)" in df.columns:
-            df["손익_숫자"] = (
-                df["손익(원)"].astype(str)
-                .str.replace(",", "", regex=False)
-                .str.replace("+", "", regex=False)
-            )
-            df["손익_숫자"] = pd.to_numeric(df["손익_숫자"], errors="coerce")
-        return df
-    except Exception as e:
-        st.error(f"trades.csv 로드 실패: {e}")
-        return pd.DataFrame()
+    frame = pd.read_csv(target, encoding="utf-8-sig")
+    if frame.empty:
+        return frame
+    if "날짜시간" in frame.columns:
+        frame["날짜시간_dt"] = pd.to_datetime(frame["날짜시간"], errors="coerce")
+    if "손익(원)" in frame.columns:
+        frame["손익_숫자"] = pd.to_numeric(
+            frame["손익(원)"].astype(str).str.replace(",", "", regex=False).str.replace("+", "", regex=False),
+            errors="coerce",
+        )
+    return frame
 
 
-@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
-def load_market_snapshot(ticker: str, candle_count: int):
-    """현재가 + 250봉 캔들 + 지표"""
-    cur = api.get_current_price(ticker)
-    df  = api.get_ohlcv(ticker, "minute60", count=candle_count)
-    return cur, df
-
-
-@st.cache_data(ttl=config.DASHBOARD_CACHE_TTL_SEC)
-def load_balances(ticker: str):
-    upbit = api.get_upbit_client()
-    krw = api.get_krw_balance(upbit)
-    coin = api.get_coin_balance(upbit, ticker)
-    if coin is None:
-        raise RuntimeError(f"{ticker} 코인 잔고 조회 실패")
-    return krw, coin
-
-
-def load_log_tail(n: int = 50) -> str:
-    if not os.path.exists(config.LOG_FILE):
+def _load_log_tail(line_count: int = 50) -> str:
+    target = _data_path(config.LOG_FILE)
+    if not target.exists():
         return "(로그 없음)"
     try:
-        with open(config.LOG_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        return "".join(lines[-n:])
-    except Exception as e:
-        return f"(로그 읽기 실패: {e})"
+        with target.open("r", encoding="utf-8") as handle:
+            return "".join(handle.readlines()[-line_count:])
+    except Exception as exc:
+        return f"(로그 읽기 실패: {exc})"
 
 
-# ── 렌더링 ──────────────────────────────────────────
-def fmt_won(v) -> str:
-    if v is None:
-        return "-"
-    sign = "+" if v > 0 else ""
-    return f"{sign}{v:,.0f}원"
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except (TypeError, ValueError):
+        return default
 
 
-def render_kpis(market, status: dict, position: Optional[dict], baseline_vol: float,
-                exchange_vol: float, krw_balance: float, current_price: float,
-                candles: pd.DataFrame):
-    s = status or {}
-    halt_status = s.get("일일", {}).get("거래중단", False)
-    halt_reason = s.get("일일", {}).get("중단사유", "")
-
-    # 봇 운용 자산 평가액
-    bot_vol = max(0.0, exchange_vol - baseline_vol)
-    cum_pnl = s.get("누적실현손익", 0)
-    invested = s.get("누적투자금", 0)
-    allocated_cash = max(0.0, market.BUDGET + cum_pnl - invested)
-    bot_market_value = bot_vol * current_price + allocated_cash
-    today_pnl = s.get("일일", {}).get("실현손익", 0)
-    win_rate = s.get("승률", 0)
-
-    pos_label = "보유 중 ✅" if (position and bot_vol > 0) else "무포지션"
-
-    # 현재가 — 직전 1H봉 종가 대비 변화율
-    price_delta = None
-    if not candles.empty and len(candles) >= 2 and current_price:
-        prev_close = float(candles["close"].iloc[-2])
-        if prev_close > 0:
-            price_delta = f"{(current_price/prev_close - 1)*100:+.2f}%"
-
-    cols = st.columns(7)
-    cols[0].metric(
-        f"현재가 ({market.TICKER})",
-        f"{current_price:,.0f}원" if current_price else "-",
-        price_delta,
-        help="직전 1H봉 종가 대비 변화율",
-    )
-    cols[1].metric("배정 예산", f"{market.BUDGET:,.0f}원")
-    cols[2].metric(
-        "봇 운용 자산",
-        f"{bot_market_value:,.0f}원",
-        help="KRW 잔고 + 봇이 매수한 BTC 평가액 (사용자 baseline 분 제외)",
-    )
-    cols[3].metric(
-        "누적 손익",
-        fmt_won(cum_pnl),
-        delta=f"{cum_pnl/market.BUDGET*100:+.2f}%" if market.BUDGET else None,
-    )
-    cols[4].metric(
-        "오늘 손익",
-        fmt_won(today_pnl),
-        delta=f"{today_pnl/market.BUDGET*100:+.2f}%" if market.BUDGET else None,
-    )
-    cols[5].metric("승률", f"{win_rate:.1f}%")
-
-    if halt_status:
-        cols[6].metric("거래 상태", "⛔ 차단", help=halt_reason, delta_color="inverse")
-    else:
-        cols[6].metric("거래 상태", "🟢 정상" if pos_label.startswith("보유") else "🟡 대기")
+def _json_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.isoformat()
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
-def render_position_card(market, position: dict, current_price: float):
-    if not position:
-        return
-    entry = position["entry_price"]
-    pnl_pct = (current_price - entry) / entry * 100 if entry else 0
-    rem = position.get("remaining_volume", 0)
-    pnl_abs = (current_price - entry) * rem
-    stype = position.get("strategy_type", "TREND")
-    badge = "🔵 추세 (TREND)" if stype == "TREND" else "🟠 평균회귀 (BB)"
+def _load_balances() -> tuple[float, dict[str, float], str | None]:
+    if not config.UPBIT_ACCESS_KEY or not config.UPBIT_SECRET_KEY:
+        return 0.0, {}, "API 키가 없어 잔고를 조회하지 못했습니다."
+    try:
+        balances = api.get_upbit_client().get_balances()
+        if not isinstance(balances, list):
+            raise ValueError("예상하지 못한 잔고 응답 형식")
+        krw = 0.0
+        coins: dict[str, float] = {}
+        for item in balances:
+            currency = str(item.get("currency", ""))
+            balance = _finite_float(item.get("balance"))
+            if currency == "KRW":
+                krw = balance
+            elif currency:
+                coins[f"KRW-{currency}"] = balance
+        return krw, coins, None
+    except Exception as exc:
+        return 0.0, {}, f"잔고 조회 실패: {exc}"
 
-    st.subheader(f"💰 현재 포지션 — {badge}")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("매수가", f"{entry:,.0f}원")
-    c2.metric("현재가", f"{current_price:,.0f}원", f"{pnl_pct:+.2f}%")
-    c3.metric("평가손익", fmt_won(pnl_abs))
-    c4.metric("잔량", f"{rem:.8f}")
 
-    sl = position.get("stop_loss_price", 0)
+def _build_kpis(
+    market: config.MarketSettings,
+    status: dict[str, Any],
+    position: dict[str, Any] | None,
+    baseline_volume: float,
+    exchange_volume: float,
+    krw_balance: float,
+    current_price: float,
+    candles: pd.DataFrame,
+) -> dict[str, Any]:
+    daily = status.get("일일", {}) if isinstance(status.get("일일", {}), dict) else {}
+    cumulative_pnl = _finite_float(status.get("누적실현손익"))
+    invested = _finite_float(status.get("누적투자금"))
+    bot_volume = max(0.0, exchange_volume - baseline_volume)
+    allocated_cash = max(0.0, market.BUDGET + cumulative_pnl - invested)
+    today_pnl = _finite_float(daily.get("실현손익"))
+    price_delta_pct = None
+    if len(candles) >= 2 and current_price:
+        previous_close = _finite_float(candles["close"].iloc[-2])
+        if previous_close > 0:
+            price_delta_pct = (current_price / previous_close - 1) * 100
+    return {
+        "current_price": current_price,
+        "price_delta_pct": price_delta_pct,
+        "budget": market.BUDGET,
+        "bot_market_value": bot_volume * current_price + allocated_cash,
+        "cumulative_pnl": cumulative_pnl,
+        "cumulative_pnl_pct": cumulative_pnl / market.BUDGET * 100 if market.BUDGET else None,
+        "today_pnl": today_pnl,
+        "today_pnl_pct": today_pnl / market.BUDGET * 100 if market.BUDGET else None,
+        "win_rate": _finite_float(status.get("승률")),
+        "halted": bool(daily.get("거래중단", False)),
+        "halt_reason": str(daily.get("중단사유", "")),
+        "position_held": bool(position and bot_volume > 0),
+        "krw_balance": krw_balance,
+    }
 
-    if stype == "BB":
-        # BB 모드: 손절가 / SMA20 목표 / 보유시간
-        from datetime import datetime as _dt
-        entry_time = position.get("entry_time", "")
+
+def _build_position(
+    market: config.MarketSettings,
+    positions: list[dict[str, Any]],
+    position: dict[str, Any] | None,
+    current_price: float,
+    baseline_volume: float,
+    exchange_volume: float,
+) -> dict[str, Any]:
+    if market.EXIT_STRATEGY == "fixed":
+        rows = []
+        total_invested = 0.0
+        total_volume = 0.0
+        for item in positions:
+            entry = _finite_float(item.get("entry_price"))
+            volume = _finite_float(item.get("remaining_volume"))
+            invested = _finite_float(item.get("krw_invested"))
+            target = _finite_float(item.get("target_price"), entry * (1 + market.FIXED_TP_PCT))
+            stop = entry * (1 + market.FIXED_SL_PCT)
+            total_invested += invested
+            total_volume += volume
+            rows.append({
+                "entry_time": str(item.get("entry_time", "-")),
+                "entry_price": entry,
+                "volume": volume,
+                "invested": invested,
+                "market_value": volume * current_price,
+                "pnl_pct": (current_price / entry - 1) * 100 if entry and current_price else 0.0,
+                "target_price": target,
+                "target_gap_pct": (target / current_price - 1) * 100 if current_price else 0.0,
+                "stop_price": stop,
+                "stop_gap_pct": (stop / current_price - 1) * 100 if current_price else 0.0,
+            })
+        market_value = total_volume * current_price
+        unrealized = market_value - total_invested
+        return {
+            "mode": "fixed",
+            "count": len(rows),
+            "tp_pct": market.FIXED_TP_PCT * 100,
+            "sl_pct": market.FIXED_SL_PCT * 100,
+            "total_invested": total_invested,
+            "market_value": market_value,
+            "unrealized_pnl": unrealized,
+            "unrealized_pnl_pct": unrealized / total_invested * 100 if total_invested else 0.0,
+            "rows": rows,
+        }
+
+    if not position or max(0.0, exchange_volume - baseline_volume) <= 0:
+        return {"mode": "trailing", "count": 0, "baseline_volume": baseline_volume}
+
+    entry = _finite_float(position.get("entry_price"))
+    remaining = _finite_float(position.get("remaining_volume"))
+    strategy_type = str(position.get("strategy_type", "TREND"))
+    result: dict[str, Any] = {
+        "mode": "trailing",
+        "count": 1,
+        "strategy_type": strategy_type,
+        "entry_price": entry,
+        "current_price": current_price,
+        "pnl_pct": (current_price - entry) / entry * 100 if entry else 0.0,
+        "unrealized_pnl": (current_price - entry) * remaining,
+        "remaining_volume": remaining,
+        "stop_loss_price": _finite_float(position.get("stop_loss_price")),
+        "entry_time": str(position.get("entry_time", "")),
+        "entry_atr": _finite_float(position.get("entry_atr")),
+    }
+    if strategy_type == "BB":
         hours_held = 0.0
         try:
-            entry_dt = _dt.strptime(entry_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=config.KST)
-            hours_held = (_dt.now(config.KST) - entry_dt).total_seconds() / 3600
-        except (ValueError, TypeError):
+            entry_time = datetime.strptime(result["entry_time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=config.KST)
+            hours_held = max(0.0, (datetime.now(config.KST) - entry_time).total_seconds() / 3600)
+        except (TypeError, ValueError):
             pass
-        timeout_left = max(0.0, market.BB_MAX_HOLD_BARS - hours_held)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%" if entry else "-")
-        c2.metric("목표(SMA20)", "BB 중간선 도달 시 전량 매도",
-                  help="현재가가 BB 중간선(SMA20) 이상 되면 평균회귀 익절")
-        c3.metric("보유시간", f"{hours_held:.1f}h",
-                  f"TIMEOUT까지 {timeout_left:.1f}h",
-                  help=f"{market.BB_MAX_HOLD_BARS}h 도달 시 자동 청산")
-    else:
-        # TREND 모드: 기존 TP1/TP2/트레일링 표시
-        high = position.get("highest_price", entry)
-        tp1_price = entry * (1 + market.TP1_PCT)
-        tp2_price = entry * (1 + market.TP2_PCT)
-        trail_trigger = high * (1 - market.TRAILING_STOP_PCT) if position.get("tp1_done") else None
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("손절가", f"{sl:,.0f}원", f"{(sl/entry-1)*100:+.2f}%")
-        c2.metric(
-            f"TP1 (+{market.TP1_PCT*100:.1f}%)",
-            f"{tp1_price:,.0f}원",
-            "✓ 완료" if position.get("tp1_done") else "⏳ 대기",
-        )
-        c3.metric(
-            f"TP2 (+{market.TP2_PCT*100:.1f}%)",
-            f"{tp2_price:,.0f}원",
-            "✓ 완료" if position.get("tp2_done") else "⏳ 대기",
-        )
-        c4.metric(
-            "고점 대비",
-            f"{high:,.0f}원",
-            f"{(current_price/high-1)*100:+.2f}%" if high else "-",
-            help=(f"트레일링 트리거: {trail_trigger:,.0f}원" if trail_trigger else "TP1 이후 트레일링 활성화"),
-        )
-
-    entry_time = position.get("entry_time", "")
-    st.caption(f"진입 시각: {entry_time}  /  진입 ATR: {position.get('entry_atr', 0):,.0f}")
-
-
-def render_positions_card_fixed(market, positions: list, current_price: float):
-    """Fixed 모드: 다중 포지션을 표 + 합계 메트릭으로 렌더."""
-    n = len(positions)
-    fixed_pct = market.FIXED_TP_PCT * 100
-    fixed_sl = market.FIXED_SL_PCT * 100
-    st.subheader(f"💰 보유 포지션 (Fixed +{fixed_pct:.1f}% 익절 / {fixed_sl:.1f}% 손절) — {n}개")
-
-    if n == 0:
-        st.info("💤 현재 보유 포지션 없음. 매수 신호 시 자동 진입.")
-        return
-
-    # 합계 메트릭
-    total_invested = sum(float(p.get("krw_invested", 0)) for p in positions)
-    total_volume = sum(float(p.get("remaining_volume", 0)) for p in positions)
-    total_market_value = total_volume * current_price if current_price else 0
-    unrealized = total_market_value - total_invested
-    unrealized_pct = (unrealized / total_invested * 100) if total_invested else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("보유 포지션", f"{n}개")
-    c2.metric("투자 원금 합계", f"{total_invested:,.0f}원")
-    c3.metric("평가금액 (현재가)", f"{total_market_value:,.0f}원")
-    c4.metric("평가손익", fmt_won(unrealized), f"{unrealized_pct:+.2f}%")
-
-    # 포지션 표
-    rows = []
-    for p in positions:
-        entry = float(p.get("entry_price", 0))
-        target = float(p.get("target_price", entry * (1 + market.FIXED_TP_PCT)))
-        sl_target = entry * (1 + market.FIXED_SL_PCT)
-        rem_vol = float(p.get("remaining_volume", 0))
-        invested = float(p.get("krw_invested", 0))
-        cur_value = rem_vol * current_price if current_price else 0
-        pnl_pct = (current_price / entry - 1) * 100 if entry and current_price else 0
-        gap_to_target = (target / current_price - 1) * 100 if current_price else 0
-        gap_to_sl = (sl_target / current_price - 1) * 100 if current_price else 0
-        rows.append({
-            "진입시각":    p.get("entry_time", "-"),
-            "매수가":      f"{entry:,.2f}",
-            "수량":        f"{rem_vol:.8f}",
-            "투자원금":    f"{invested:,.0f}",
-            "현재 평가":   f"{cur_value:,.0f}",
-            "현재 손익률": f"{pnl_pct:+.2f}%",
-            "목표가":      f"{target:,.2f}",
-            "목표까지":    f"{gap_to_target:+.2f}%",
-            "손절가":      f"{sl_target:,.2f}",
-            "손절까지":    f"{gap_to_sl:+.2f}%",
+        result.update({
+            "hours_held": hours_held,
+            "timeout_left_hours": max(0.0, market.BB_MAX_HOLD_BARS - hours_held),
+            "max_hold_hours": market.BB_MAX_HOLD_BARS,
         })
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        highest = _finite_float(position.get("highest_price"), entry)
+        tp1_done = bool(position.get("tp1_done"))
+        result.update({
+            "highest_price": highest,
+            "high_delta_pct": (current_price / highest - 1) * 100 if highest else 0.0,
+            "tp1_price": entry * (1 + market.TP1_PCT),
+            "tp1_pct": market.TP1_PCT * 100,
+            "tp1_done": tp1_done,
+            "tp2_price": entry * (1 + market.TP2_PCT),
+            "tp2_pct": market.TP2_PCT * 100,
+            "tp2_done": bool(position.get("tp2_done")),
+            "trailing_trigger": highest * (1 - market.TRAILING_STOP_PCT) if tp1_done else None,
+        })
+    return result
 
 
-def render_market_state(market, df: pd.DataFrame, current_price: float):
-    st.subheader("📈 1H 시장 상태 / Regime / 매수 조건")
-    if df.empty or len(df) < market.MA_TREND_LONG + 5:
-        st.info("지표 계산을 위한 데이터 부족")
-        return
+def _build_market_state(
+    market: config.MarketSettings,
+    candles: pd.DataFrame,
+    current_price: float,
+) -> dict[str, Any]:
+    if candles.empty or len(candles) < market.MA_TREND_LONG + 5:
+        return {"available": False, "message": "지표 계산을 위한 데이터가 부족합니다."}
 
-    ind = strategy.calc_indicators(df, market)
-    cur = ind.iloc[-1]
-    ma20, ma50, ma200 = float(cur["ma20"]), float(cur["ma50"]), float(cur["ma200"])
-    rsi, atr = float(cur["rsi"]), float(cur["atr"])
+    indicators = strategy.calc_indicators(candles, market)
+    current = indicators.iloc[-1]
+    ma20 = _finite_float(current.get("ma20"))
+    ma50 = _finite_float(current.get("ma50"))
+    ma200 = _finite_float(current.get("ma200"))
+    rsi = _finite_float(current.get("rsi"))
+    atr = _finite_float(current.get("atr"))
+    bands = mr.calc_bb(candles, market).iloc[-1]
+    bb_lower = _finite_float(bands.get("bb_lower"))
+    bb_mid = _finite_float(bands.get("bb_mid"))
+    bb_upper = _finite_float(bands.get("bb_upper"))
+    regime_info = strategy.detect_regime(candles, market)
+    regime = str(regime_info.get("regime", "NEUTRAL"))
+    checks: list[dict[str, Any]] = []
 
-    # ── Regime 판정 ──
-    regime_info = strategy.detect_regime(df, market)
-    regime = regime_info["regime"]
-    metrics = regime_info.get("metrics", {})
-    regime_badge = {
-        "TREND":    "🔵 추세장 (TREND) — 추세 눌림목 전략 활성",
-        "SIDEWAYS": "🟠 횡보장 (SIDEWAYS) — BB 평균회귀 전략 활성",
-        "BEAR":     "🔴 약세장 (BEAR) — 신규 매수 차단",
-            "NEUTRAL":  "⚪ 데이터 부족",
-    }.get(regime, regime)
-    st.markdown(f"**현재 Regime: {regime_badge}**")
-    if metrics:
-        st.caption(
-            f"MA200 {market.REGIME_LOOKBACK_BARS}봉 기울기 {metrics.get('ma200_slope', 0)*100:+.2f}% / "
-            f"P/MA200 {metrics.get('price_to_ma200', 0)*100:+.2f}%"
-        )
-
-    # ── 추세 지표 + BB 지표 (한 줄) ──
-    cols = st.columns(5)
-    cols[0].metric("MA20",    f"{ma20:,.0f}",    f"{(current_price/ma20-1)*100:+.2f}%")
-    cols[1].metric("MA50",    f"{ma50:,.0f}",    f"{(current_price/ma50-1)*100:+.2f}%")
-    cols[2].metric("MA200",   f"{ma200:,.0f}",   f"{(current_price/ma200-1)*100:+.2f}%")
-    cols[3].metric("RSI(14)", f"{rsi:.1f}")
-    cols[4].metric("ATR(14)", f"{atr:,.0f}")
-
-    # BB 지표
-    bb = mr.calc_bb(df, market)
-    bb_lower = float(bb.iloc[-1]["bb_lower"])
-    bb_mid   = float(bb.iloc[-1]["bb_mid"])
-    bb_upper = float(bb.iloc[-1]["bb_upper"])
-    bcols = st.columns(3)
-    bcols[0].metric(f"BB하단 ({market.BB_PERIOD},{market.BB_STD}σ)",
-                    f"{bb_lower:,.0f}", f"{(current_price/bb_lower-1)*100:+.2f}%")
-    bcols[1].metric("BB중간 (SMA20)",
-                    f"{bb_mid:,.0f}",   f"{(current_price/bb_mid-1)*100:+.2f}%")
-    bcols[2].metric("BB상단",
-                    f"{bb_upper:,.0f}", f"{(current_price/bb_upper-1)*100:+.2f}%")
-
-    # ── Regime 별 매수 조건 체크리스트 ──
     if regime == "TREND":
-        range_pos = None
-        if market.ENTRY_RANGE_LOOKBACK_BARS > 0:
-            recent = df.tail(market.ENTRY_RANGE_LOOKBACK_BARS)
-            recent_low = float(recent["low"].min())
-            recent_high = float(recent["high"].max())
-            if recent_high > recent_low:
-                range_pos = (current_price - recent_low) / (recent_high - recent_low)
-        checks = {
-            "추세 (P > MA200)":                                          current_price > ma200,
-            "정렬 (MA50 > MA200)":                                        ma50 > ma200,
-            f"P ≥ MA50·{1-market.ENTRY_MID_MA_BUFFER_PCT:.3f}":            current_price >= ma50 * (1 - market.ENTRY_MID_MA_BUFFER_PCT),
-            f"눌림목 (P ≤ MA20·{1+market.ENTRY_PULLBACK_TOLERANCE:.3f})":  current_price <= ma20 * (1 + market.ENTRY_PULLBACK_TOLERANCE),
-            f"RSI ∈ [{market.RSI_BUY_MIN},{market.ENTRY_RSI_MAX}]":        market.RSI_BUY_MIN <= rsi <= market.ENTRY_RSI_MAX,
-        }
-        # 직전 완성봉이 TREND_BREAK 조건을 만족하면 매수 보류 (즉시 청산 방지)
+        raw_checks: list[tuple[str, bool]] = [
+            ("추세 (P > MA200)", current_price > ma200),
+            ("정렬 (MA50 > MA200)", ma50 > ma200),
+            (f"P ≥ MA50·{1-market.ENTRY_MID_MA_BUFFER_PCT:.3f}", current_price >= ma50 * (1 - market.ENTRY_MID_MA_BUFFER_PCT)),
+            (f"눌림목 (P ≤ MA20·{1+market.ENTRY_PULLBACK_TOLERANCE:.3f})", current_price <= ma20 * (1 + market.ENTRY_PULLBACK_TOLERANCE)),
+            (f"RSI ∈ [{market.RSI_BUY_MIN},{market.ENTRY_RSI_MAX}]", market.RSI_BUY_MIN <= rsi <= market.ENTRY_RSI_MAX),
+        ]
         confirm_bars = max(1, market.TREND_BREAK_CONFIRM_BARS)
-        ma50_series = df["close"].rolling(window=market.MA_TREND_MID).mean()
+        ma50_series = candles["close"].rolling(window=market.MA_TREND_MID).mean()
         no_break = True
-        if len(df) >= market.MA_TREND_MID + confirm_bars + 1:
-            closed_closes = df["close"].iloc[:-1].tail(confirm_bars)
+        if len(candles) >= market.MA_TREND_MID + confirm_bars + 1:
+            closes = candles["close"].iloc[:-1].tail(confirm_bars)
             closed_ma50 = ma50_series.iloc[:-1].tail(confirm_bars)
-            if len(closed_closes) == confirm_bars and not closed_ma50.isna().any():
-                threshold_series = closed_ma50 * (1 - market.TREND_BREAK_BUFFER_PCT)
-                no_break = not bool((closed_closes < threshold_series).all())
-        checks[f"직전{confirm_bars}봉 종가 ≥ MA50·{1-market.TREND_BREAK_BUFFER_PCT:.3f}"] = no_break
-        if range_pos is not None:
-            checks[f"최근{market.ENTRY_RANGE_LOOKBACK_BARS}봉 상단 회피 ({range_pos*100:.0f}% ≤ {market.ENTRY_RANGE_MAX_POSITION*100:.0f}%)"] = (
-                range_pos <= market.ENTRY_RANGE_MAX_POSITION
-            )
-        passed = sum(checks.values())
-        st.write(f"**🔵 TREND 매수 조건: {passed}/{len(checks)}**")
-        cc = st.columns(len(checks))
-        for i, (label, ok) in enumerate(checks.items()):
-            cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
-
+            if len(closes) == confirm_bars and not closed_ma50.isna().any():
+                no_break = not bool((closes < closed_ma50 * (1 - market.TREND_BREAK_BUFFER_PCT)).all())
+        raw_checks.append((f"직전{confirm_bars}봉 종가 ≥ MA50·{1-market.TREND_BREAK_BUFFER_PCT:.3f}", no_break))
+        if market.ENTRY_RANGE_LOOKBACK_BARS > 0:
+            recent = candles.tail(market.ENTRY_RANGE_LOOKBACK_BARS)
+            low, high = _finite_float(recent["low"].min()), _finite_float(recent["high"].max())
+            if high > low:
+                range_position = (current_price - low) / (high - low)
+                raw_checks.append((
+                    f"최근{market.ENTRY_RANGE_LOOKBACK_BARS}봉 상단 회피 ({range_position*100:.0f}% ≤ {market.ENTRY_RANGE_MAX_POSITION*100:.0f}%)",
+                    range_position <= market.ENTRY_RANGE_MAX_POSITION,
+                ))
+        checks = [{"label": label, "passed": passed} for label, passed in raw_checks]
     elif regime == "SIDEWAYS":
-        cond_bb_touch = (
-            float(cur["low"]) <= bb_lower * (1 + market.BB_TOL)
-            and current_price <= bb_mid
-        )
-        checks = {
-            f"BB 하단 터치 (L ≤ 하단·{1+market.BB_TOL:.3f}, P ≤ 중간선)": cond_bb_touch,
-            "양봉 반등 (close > open)":                    float(cur["close"]) > float(cur["open"]),
-            f"RSI < {market.BB_RSI_MAX:.0f}":               rsi < market.BB_RSI_MAX,
-            f"P > MA200·{market.BB_MA200_FLOOR}":           current_price > ma200 * market.BB_MA200_FLOOR,
-        }
-        passed = sum(checks.values())
-        st.write(f"**🟠 BB 평균회귀 매수 조건: {passed}/4**")
-        cc = st.columns(4)
-        for i, (label, ok) in enumerate(checks.items()):
-            cc[i].markdown(f"{'✅' if ok else '⬜'} {label}")
+        raw_checks = [
+            (f"BB 하단 터치 (L ≤ 하단·{1+market.BB_TOL:.3f}, P ≤ 중간선)", _finite_float(current.get("low")) <= bb_lower * (1 + market.BB_TOL) and current_price <= bb_mid),
+            ("양봉 반등 (close > open)", _finite_float(current.get("close")) > _finite_float(current.get("open"))),
+            (f"RSI < {market.BB_RSI_MAX:.0f}", rsi < market.BB_RSI_MAX),
+            (f"P > MA200·{market.BB_MA200_FLOOR}", current_price > ma200 * market.BB_MA200_FLOOR),
+        ]
+        checks = [{"label": label, "passed": passed} for label, passed in raw_checks]
 
-    else:  # BEAR / NEUTRAL
-        st.warning(f"⛔ {regime} 상태 — 신규 매수 평가하지 않음 (자본 보존)")
+    metrics = regime_info.get("metrics", {})
+    return {
+        "available": True,
+        "regime": regime,
+        "regime_reason": str(regime_info.get("reason", "")),
+        "regime_metrics": {
+            "ma200_slope_pct": _finite_float(metrics.get("ma200_slope")) * 100,
+            "price_to_ma200_pct": _finite_float(metrics.get("price_to_ma200")) * 100,
+        },
+        "indicators": {"ma20": ma20, "ma50": ma50, "ma200": ma200, "rsi": rsi, "atr": atr},
+        "bands": {"lower": bb_lower, "mid": bb_mid, "upper": bb_upper, "period": market.BB_PERIOD, "std": market.BB_STD},
+        "checks": checks,
+        "checks_passed": sum(bool(item["passed"]) for item in checks),
+    }
 
 
-def render_charts(trades_df: pd.DataFrame):
-    st.subheader("📊 손익 차트")
-    if trades_df.empty:
-        st.info("거래 내역이 없습니다.")
-        return
-
-    sells = trades_df[trades_df["종류"] == "매도"].copy()
-    if sells.empty:
-        st.info("매도(실현) 내역이 없습니다.")
-        return
-
-    sells = sells.sort_values("날짜시간_dt").dropna(subset=["손익_숫자"])
+def _build_charts(trades: pd.DataFrame) -> dict[str, Any]:
+    empty = {"cumulative": [], "daily": [], "daily_total": 0.0}
+    if trades.empty or "종류" not in trades.columns or "손익_숫자" not in trades.columns:
+        return empty
+    sells = trades[trades["종류"] == "매도"].copy()
+    if sells.empty or "날짜시간_dt" not in sells.columns:
+        return empty
+    sells = sells.sort_values("날짜시간_dt").dropna(subset=["날짜시간_dt", "손익_숫자"])
     sells["누적손익"] = sells["손익_숫자"].cumsum()
-
-    # 누적 손익
-    fig_cum = go.Figure()
-    fig_cum.add_trace(go.Scatter(
-        x=sells["날짜시간_dt"], y=sells["누적손익"],
-        mode="lines+markers", name="누적 실현손익",
-        line=dict(width=2),
-    ))
-    fig_cum.update_layout(
-        height=320, margin=dict(l=10, r=10, t=30, b=10),
-        title="누적 실현손익 추이",
-        xaxis_title=None, yaxis_title="원",
-    )
-    st.plotly_chart(fig_cum, use_container_width=True)
-
-    # 일별 손익 (최근 30일)
-    sells["날짜"] = sells["날짜시간_dt"].dt.date
-    end = datetime.now(config.KST).date()
-    start = end - timedelta(days=29)
-    daily = sells.groupby("날짜")["손익_숫자"].sum().reindex(
-        [start + timedelta(days=i) for i in range(30)], fill_value=0
-    )
-    colors = ["#ef4444" if v < 0 else "#10b981" for v in daily.values]
-    fig_day = go.Figure(go.Bar(x=daily.index, y=daily.values, marker_color=colors))
-    fig_day.update_layout(
-        height=280, margin=dict(l=10, r=10, t=30, b=10),
-        title=f"일별 실현손익 (최근 30일, 합계 {daily.sum():+,.0f}원)",
-        xaxis_title=None, yaxis_title="원",
-    )
-    st.plotly_chart(fig_day, use_container_width=True)
-
-
-def render_trade_table(trades_df: pd.DataFrame, key_prefix: str):
-    st.subheader("📋 거래 내역")
-    if trades_df.empty:
-        st.info("거래 내역이 없습니다.")
-        return
-
-    # 필터
-    col1, col2 = st.columns([1, 2])
-    types = col1.multiselect(
-        "종류",
-        options=["매수", "매도"],
-        default=["매수", "매도"],
-        key=f"{key_prefix}_trade_types",
-    )
-    n_rows = col2.slider("표시 행 수", 10, 500, 50, key=f"{key_prefix}_trade_rows")
-
-    f = trades_df.copy()
-    f = f[f["종류"].isin(types)]
-    f = f.sort_values("날짜시간_dt", ascending=False).head(n_rows)
-
-    show_cols = [
-        "날짜시간", "종류", "사유",
-        "매수가(원)", "매도가(원)", "수량",
-        "매수금액(원)", "매도금액(원)",
-        "손익(원)", "손익률(%)",
-        "MA20", "MA50", "MA200", "RSI", "ATR",
+    cumulative = [
+        {"time": row["날짜시간_dt"].isoformat(), "value": _finite_float(row["누적손익"])}
+        for _, row in sells.iterrows()
     ]
-    show_cols = [c for c in show_cols if c in f.columns]
-    st.dataframe(f[show_cols], use_container_width=True, hide_index=True)
-
-    # CSV 다운로드
-    csv = trades_df.drop(columns=["날짜시간_dt", "손익_숫자"], errors="ignore").to_csv(
-        index=False, encoding="utf-8-sig"
+    today = datetime.now(config.KST).date()
+    start = today - timedelta(days=29)
+    sells["날짜"] = sells["날짜시간_dt"].dt.date
+    daily_series = sells.groupby("날짜")["손익_숫자"].sum().reindex(
+        [start + timedelta(days=index) for index in range(30)], fill_value=0
     )
-    st.download_button(
-        "📥 전체 CSV 다운로드",
-        data=csv,
-        file_name=f"{key_prefix}_trades.csv",
-        mime="text/csv",
-        key=f"{key_prefix}_trade_csv",
-    )
+    daily = [{"date": day.isoformat(), "value": _finite_float(value)} for day, value in daily_series.items()]
+    return {"cumulative": cumulative, "daily": daily, "daily_total": _finite_float(daily_series.sum())}
 
 
-def render_log_tail():
-    with st.expander("📜 최근 로그 (마지막 50줄)", expanded=False):
-        st.code(load_log_tail(50), language="log")
+def _trade_records(trades: pd.DataFrame, limit: int = 500) -> list[dict[str, Any]]:
+    if trades.empty:
+        return []
+    frame = trades.sort_values("날짜시간_dt", ascending=False) if "날짜시간_dt" in trades.columns else trades.iloc[::-1]
+    hidden = {"날짜시간_dt", "손익_숫자"}
+    columns = [column for column in frame.columns if column not in hidden]
+    return [
+        {column: _json_value(row[column]) for column in columns}
+        for _, row in frame.head(limit).iterrows()
+    ]
 
 
-# ── 메인 ────────────────────────────────────────────
-def main():
-    st.set_page_config(
-        page_title="Upbit Trader",
-        page_icon=str(APP_ICON_PATH) if APP_ICON_PATH.exists() else "🤖",
-        layout="wide",
-    )
+def _market_trades(all_trades: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    if all_trades.empty or "티커" not in all_trades.columns:
+        return all_trades.copy()
+    return all_trades[all_trades["티커"] == ticker].copy()
 
-    st.markdown(
-        """
-        <style>
-        [data-testid="stMetricValue"] { font-size: 1.6rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
-    if not auth_gate():
-        return
+def _build_dashboard_snapshot() -> dict[str, Any]:
+    warnings: list[str] = []
+    try:
+        trades = _load_trades()
+    except Exception as exc:
+        trades = pd.DataFrame()
+        warnings.append(f"거래 내역 로드 실패: {exc}")
 
-    st_autorefresh(interval=config.DASHBOARD_REFRESH_SEC * 1000, key="auto_refresh")
+    krw_balance, coin_balances, balance_warning = _load_balances()
+    if balance_warning:
+        warnings.append(balance_warning)
 
-    # 헤더
-    cols = st.columns([4, 1])
-    with cols[0]:
-        if SERVICE_LOGO_PATH.exists():
-            st.image(str(SERVICE_LOGO_PATH), width=360)
-        else:
-            st.title("Upbit Trader")
-        st.caption("업비트 BTC + DOGE 자동매매 대시보드")
-    cols[1].caption(f"마지막 갱신: {datetime.now(config.KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
-
-    trades_df = load_trades_df()
-    markets = config.active_markets()
-    tabs = st.tabs([f"{m.name} · {m.TICKER}" for m in markets])
-
-    for tab, market in zip(tabs, markets):
-        with tab:
-            status   = _read_json(market.STATUS_FILE, market.STATUS_FILE) or {}
-            baseline = _read_json(market.BASELINE_FILE, market.BASELINE_FILE)
-            baseline_vol = _baseline_volume_or_stop(baseline)
-            is_fixed_mode = (market.EXIT_STRATEGY == "fixed")
-            if is_fixed_mode:
-                positions_list = _read_json_list(market.POSITIONS_FILE, market.POSITIONS_FILE)
-                position = positions_list[0] if positions_list else None  # KPI에서 "보유 중" 표시용
+    markets_payload = []
+    for market in config.active_markets():
+        market_warnings: list[str] = []
+        try:
+            status = _read_json_dict(market.STATUS_FILE)
+            baseline = _read_json_dict(market.BASELINE_FILE)
+            baseline_volume = _finite_float(baseline.get("volume"))
+            if market.EXIT_STRATEGY == "fixed":
+                positions = _read_json_list(market.POSITIONS_FILE)
+                position = positions[0] if positions else None
             else:
-                positions_list = []
-                position = _read_json(market.POSITION_FILE, market.POSITION_FILE)
+                positions = []
+                position = _read_json_dict(market.POSITION_FILE) or None
+        except Exception as exc:
+            status, baseline_volume, positions, position = {}, 0.0, [], None
+            market_warnings.append(f"상태 파일 로드 실패: {exc}")
 
-            if "티커" in trades_df.columns:
-                market_trades = trades_df[trades_df["티커"] == market.TICKER].copy()
-            else:
-                market_trades = trades_df.copy()
+        try:
+            current_price = api.get_current_price(market.TICKER)
+            candles = api.get_ohlcv(market.TICKER, "minute60", count=market.CANDLE_COUNT)
+            if not current_price:
+                market_warnings.append("현재가 조회에 실패했습니다.")
+            if candles.empty:
+                market_warnings.append("캔들 조회에 실패했습니다.")
+        except Exception as exc:
+            current_price, candles = 0.0, pd.DataFrame()
+            market_warnings.append(f"시세 조회 실패: {exc}")
 
-            try:
-                current_price, candles = load_market_snapshot(market.TICKER, market.CANDLE_COUNT)
-            except Exception as e:
-                st.error(f"시세 조회 실패: {e}")
-                current_price, candles = 0.0, pd.DataFrame()
+        exchange_volume = coin_balances.get(market.TICKER, 0.0)
+        scoped_trades = _market_trades(trades, market.TICKER)
+        markets_payload.append({
+            "name": market.name,
+            "ticker": market.TICKER,
+            "warnings": market_warnings,
+            "kpis": _build_kpis(market, status, position, baseline_volume, exchange_volume, krw_balance, current_price, candles),
+            "position": _build_position(market, positions, position, current_price, baseline_volume, exchange_volume),
+            "market_state": _build_market_state(market, candles, current_price),
+            "charts": _build_charts(scoped_trades),
+            "trades": _trade_records(scoped_trades),
+            "settings": {
+                "budget": market.BUDGET,
+                "position_pct": market.POSITION_PCT * 100,
+                "exit_strategy": market.EXIT_STRATEGY,
+                "fixed_tp_pct": market.FIXED_TP_PCT * 100,
+                "fixed_sl_pct": market.FIXED_SL_PCT * 100,
+            },
+        })
 
-            try:
-                krw_balance, coin_info = load_balances(market.TICKER)
-                exchange_vol = coin_info["balance"]
-            except Exception as e:
-                st.warning(f"잔고 조회 실패 (API 키 없음 또는 권한 부족): {e}")
-                krw_balance, exchange_vol = 0.0, 0.0
-
-            render_kpis(market, status, position, baseline_vol, exchange_vol, krw_balance, current_price, candles)
-            st.divider()
-
-            if is_fixed_mode:
-                render_positions_card_fixed(market, positions_list, current_price)
-                st.divider()
-            elif position and (exchange_vol - baseline_vol) > 0:
-                render_position_card(market, position, current_price)
-                st.divider()
-            else:
-                coin_symbol = market.TICKER.split("-")[-1]
-                st.info(f"💤 현재 봇 보유 포지션 없음. (사용자 보유 baseline: {baseline_vol:.8f} {coin_symbol})")
-                st.divider()
-
-            render_market_state(market, candles, current_price)
-            st.divider()
-
-            render_charts(market_trades)
-            st.divider()
-
-            render_trade_table(market_trades, key_prefix=market.TICKER.replace("-", "_"))
-
-            mode_desc = (
-                f"🟣 Fixed +{market.FIXED_TP_PCT*100:.1f}% 익절, {market.FIXED_SL_PCT*100:.1f}% 손절 (다중포지션)"
-                if is_fixed_mode
-                else "🔵 추세 눌림목 + 🟠 BB 평균회귀 (Regime 자동 선택, TP1/TP2/트레일링/손절)"
-            )
-            st.caption(
-                f"Ticker: {market.TICKER}  •  Budget: {market.BUDGET:,.0f}원  •  "
-                f"Position size: {market.POSITION_PCT*100:.0f}%  •  "
-                f"매도 모드: {mode_desc}"
-            )
-
-    render_log_tail()
+    return {
+        "generated_at": datetime.now(config.KST).isoformat(),
+        "refresh_sec": config.DASHBOARD_REFRESH_SEC,
+        "cache_ttl_sec": config.DASHBOARD_CACHE_TTL_SEC,
+        "warnings": warnings,
+        "markets": markets_payload,
+        "log": _load_log_tail(50),
+    }
 
 
-if __name__ == "__main__":
-    main()
+def _dashboard_snapshot(force: bool = False) -> dict[str, Any]:
+    global _snapshot_data, _snapshot_expires_at
+    now = time.monotonic()
+    if not force and _snapshot_data is not None and now < _snapshot_expires_at:
+        return _snapshot_data
+    with _snapshot_lock:
+        now = time.monotonic()
+        if not force and _snapshot_data is not None and now < _snapshot_expires_at:
+            return _snapshot_data
+        _snapshot_data = _build_dashboard_snapshot()
+        _snapshot_expires_at = now + max(1, config.DASHBOARD_CACHE_TTL_SEC)
+        return _snapshot_data
+
+
+def _session_key() -> bytes:
+    return hashlib.sha256((config.DASHBOARD_PASSWORD + "|upbit-dashboard").encode("utf-8")).digest()
+
+
+def _create_session_token() -> str:
+    expires_at = int(time.time()) + SESSION_MAX_AGE_SEC
+    payload = f"{expires_at}.{secrets.token_urlsafe(16)}"
+    signature = hmac.new(_session_key(), payload.encode("utf-8"), hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    return f"{payload}.{encoded_signature}"
+
+
+def _valid_session_token(token: str | None) -> bool:
+    if not config.DASHBOARD_PASSWORD:
+        return True
+    if not token:
+        return False
+    try:
+        expires_at, nonce, signature = token.split(".", 2)
+        if int(expires_at) < int(time.time()):
+            return False
+        payload = f"{expires_at}.{nonce}"
+        expected = base64.urlsafe_b64encode(
+            hmac.new(_session_key(), payload.encode("utf-8"), hashlib.sha256).digest()
+        ).decode("ascii").rstrip("=")
+        return hmac.compare_digest(signature, expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_authenticated(request: Request) -> bool:
+    return _valid_session_token(request.cookies.get(SESSION_COOKIE))
+
+
+def _require_auth(request: Request) -> None:
+    if not _is_authenticated(request):
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+
+
+@app.middleware("http")
+async def private_api_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.get("/api/session")
+def session_status(request: Request) -> dict[str, bool]:
+    return {
+        "authenticated": _is_authenticated(request),
+        "password_required": bool(config.DASHBOARD_PASSWORD),
+    }
+
+
+@app.post("/api/login")
+def login(payload: LoginRequest, request: Request) -> JSONResponse:
+    if config.DASHBOARD_PASSWORD and not hmac.compare_digest(payload.password, config.DASHBOARD_PASSWORD):
+        raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다.")
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        _create_session_token(),
+        max_age=SESSION_MAX_AGE_SEC,
+        httponly=True,
+        secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https",
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/logout")
+def logout(_: None = Depends(_require_auth)) -> JSONResponse:
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/dashboard")
+def dashboard_snapshot(refresh: bool = False, _: None = Depends(_require_auth)) -> dict[str, Any]:
+    return _dashboard_snapshot(force=refresh)
+
+
+@app.get("/api/trades/{ticker}/csv")
+def download_trades(ticker: str, _: None = Depends(_require_auth)) -> Response:
+    try:
+        config.market_by_ticker(ticker)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    trades = _market_trades(_load_trades(), ticker)
+    hidden = [column for column in ("날짜시간_dt", "손익_숫자") if column in trades.columns]
+    csv_text = trades.drop(columns=hidden).to_csv(index=False, encoding="utf-8-sig")
+    payload = io.BytesIO(csv_text.encode("utf-8-sig"))
+    filename = f"{ticker.replace('-', '_')}_trades.csv"
+    return StreamingResponse(
+        payload,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+if BRAND_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=BRAND_DIR), name="assets")
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
