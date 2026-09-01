@@ -1,6 +1,7 @@
 name: GCP VM 자동 배포
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main   # main 브랜치에 push될 때만 배포
