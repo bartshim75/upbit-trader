@@ -34,7 +34,7 @@ jobs:
             sudo systemctl restart upbit-trader
 
             echo "🔄 대시보드 재시작..."
-            if systemctl cat upbit-dashboard 2>/dev/null | grep -q "streamlit run"; then
+            if systemctl show upbit-dashboard --property=ExecStart --value 2>/dev/null | grep -q "streamlit run"; then
               echo "🔧 최초 1회 FastAPI/Nginx 서비스 전환..."
               bash setup.sh
             fi
