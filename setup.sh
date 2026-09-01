@@ -11,13 +11,15 @@ echo "===================================="
 sudo apt-get update -y
 sudo apt-get install -y python3-pip python3-venv git nginx
 
-# 2. 가상환경 생성
-python3 -m venv venv
+# 2. 가상환경 생성 (기존 환경은 보존)
+if [ ! -d venv ]; then
+    python3 -m venv venv
+fi
 source venv/bin/activate
 
 # 3. 의존성 설치
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
 # 4. .env 파일 생성 안내
 if [ ! -f .env ]; then
@@ -106,12 +108,12 @@ server {
 
     location /assets/ {
         expires 7d;
-        try_files $uri =404;
+        try_files \$uri =404;
     }
 
     location / {
         expires -1;
-        try_files $uri $uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
