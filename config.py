@@ -107,9 +107,7 @@ class MarketSettings:
     POSITION_FILE: str
     POSITIONS_FILE: str   # fixed 모드 다중 포지션 리스트 파일
     BASELINE_FILE: str
-    EXIT_STRATEGY: str    # "trailing" (기존) | "fixed" (+FIXED_TP_PCT 정액익절, 다중포지션)
-    FIXED_TP_PCT: float
-    FIXED_SL_PCT: float
+    EXIT_STRATEGY: str    # "trailing" (기존) | "fixed" (평단 분할익절, 다중포지션)
 
 
 # ── 업비트 API ──────────────────────────────────────
@@ -136,10 +134,16 @@ TRAILING_STOP_PCT = env_float("TRAILING_STOP_PCT", 0.018)
 
 # ── 매도 전략 모드 (글로벌 기본값, per-market 오버라이드 가능) ───
 # "trailing" : 기존 동작 (TP1/TP2/트레일링/손절/추세이탈, 동시 1포지션)
-# "fixed"    : +FIXED_TP_PCT 정액 익절만 (손절/트레일링 없음, 다중 포지션 허용)
+# "fixed"    : 봇 평단 기준 3/6/9% 분할익절 (손절 없음, 다중 포지션 허용)
 EXIT_STRATEGY = env_str("EXIT_STRATEGY", "fixed")
-FIXED_TP_PCT  = env_float("FIXED_TP_PCT", 0.02)   # BTC: +2% 익절
-FIXED_SL_PCT  = env_float("FIXED_SL_PCT", -0.99)  # 사용 안 함 (손절 없음)
+
+# ── fixed 모드 평단 분할익절 (모든 종목 공통) ─────────
+AVERAGE_EXIT_FIRST_PCT       = 0.03
+AVERAGE_EXIT_FIRST_RATIO     = 0.30
+AVERAGE_EXIT_SECOND_PCT      = 0.06
+AVERAGE_EXIT_SECOND_RATIO    = 0.60
+AVERAGE_EXIT_FINAL_PCT       = 0.09
+AVERAGE_EXIT_COOLDOWN_HOURS  = 24
 
 # ── 일일 리스크 한도 ─────────────────────────────────
 DAILY_LOSS_LIMIT_PCT  = env_float("DAILY_LOSS_LIMIT_PCT",  0.03)
@@ -203,8 +207,6 @@ LOG_FILE       = "trader.log"
 
 # ── BTC 매도 전략 오버라이드 ─────────────────────────
 BTC_EXIT_STRATEGY = env_str  ("BTC_EXIT_STRATEGY", EXIT_STRATEGY)
-BTC_FIXED_TP_PCT  = env_float("BTC_FIXED_TP_PCT",  FIXED_TP_PCT)
-BTC_FIXED_SL_PCT  = env_float("BTC_FIXED_SL_PCT",  FIXED_SL_PCT)
 
 
 def _ticker_suffix(ticker: str) -> str:
@@ -263,8 +265,6 @@ def _primary_market() -> MarketSettings:
         POSITIONS_FILE=POSITIONS_FILE,
         BASELINE_FILE=BASELINE_FILE,
         EXIT_STRATEGY=BTC_EXIT_STRATEGY,
-        FIXED_TP_PCT=BTC_FIXED_TP_PCT,
-        FIXED_SL_PCT=BTC_FIXED_SL_PCT,
     )
 
 
@@ -330,8 +330,6 @@ DOGE_SLIPPAGE_LIMIT_PCT = env_float("DOGE_SLIPPAGE_LIMIT_PCT", 0.008)
 DOGE_API_ERROR_LIMIT = API_ERROR_LIMIT
 
 DOGE_EXIT_STRATEGY = env_str  ("DOGE_EXIT_STRATEGY", EXIT_STRATEGY)
-DOGE_FIXED_TP_PCT  = env_float("DOGE_FIXED_TP_PCT",  0.03)          # DOGE: +3% 익절
-DOGE_FIXED_SL_PCT  = env_float("DOGE_FIXED_SL_PCT",  FIXED_SL_PCT)
 
 
 def _doge_market() -> MarketSettings:
@@ -387,8 +385,6 @@ def _doge_market() -> MarketSettings:
         POSITIONS_FILE=f"positions_{suffix}.json",
         BASELINE_FILE=f"baseline_{suffix}.json",
         EXIT_STRATEGY=DOGE_EXIT_STRATEGY,
-        FIXED_TP_PCT=DOGE_FIXED_TP_PCT,
-        FIXED_SL_PCT=DOGE_FIXED_SL_PCT,
     )
 
 
@@ -437,10 +433,6 @@ def _validate_market(market: MarketSettings):
         raise ValueError(f"❌ {market.name}: BUDGET은 MIN_ORDER_KRW 이상이어야 합니다.")
     if market.EXIT_STRATEGY not in ("trailing", "fixed"):
         raise ValueError(f"❌ {market.name}: EXIT_STRATEGY는 'trailing' 또는 'fixed' 여야 합니다. (현재: {market.EXIT_STRATEGY})")
-    if market.FIXED_TP_PCT <= 0:
-        raise ValueError(f"❌ {market.name}: FIXED_TP_PCT는 0보다 커야 합니다. (현재: {market.FIXED_TP_PCT})")
-    if market.FIXED_SL_PCT >= 0:
-        raise ValueError(f"❌ {market.name}: FIXED_SL_PCT는 음수여야 합니다. (현재: {market.FIXED_SL_PCT})")
 
 
 def validate():

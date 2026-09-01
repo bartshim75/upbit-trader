@@ -238,27 +238,27 @@ function renderPosition(market) {
         <td>${won(row.invested)}</td>
         <td>${won(row.market_value)}</td>
         <td class="${tone(row.pnl_pct)}">${percent(row.pnl_pct)}</td>
-        <td>${number(row.target_price, 2)}</td>
-        <td class="${tone(-row.target_gap_pct)}">${percent(row.target_gap_pct)}</td>
-        <td>${number(row.stop_price, 2)}</td>
-        <td>${percent(row.stop_gap_pct)}</td>
       </tr>
     `).join("");
     $("#position-panel").innerHTML = `
       <div class="panel">
         <div class="panel-header">
-          <h2 class="panel-title">보유 포지션 · ${position.count}개</h2>
-          <span class="status-chip trend">FIXED +${number(position.tp_pct, 1)}% / ${number(position.sl_pct, 1)}%</span>
+          <h2 class="panel-title">평단 분할익절 · ${position.count}개</h2>
+          <span class="status-chip trend">AVG LADDER · 24H</span>
         </div>
         <div class="metric-strip">
-          ${metric("포지션", `${position.count}개`)}
+          ${metric("평균 매수가", won(position.average_entry))}
+          ${metric("현재가", won(position.current_price), percent(position.unrealized_pnl_pct), tone(position.unrealized_pnl_pct))}
           ${metric("투자 원금", won(position.total_invested))}
-          ${metric("현재 평가", won(position.market_value))}
           ${metric("평가 손익", won(position.unrealized_pnl, true), percent(position.unrealized_pnl_pct), tone(position.unrealized_pnl))}
+          ${metric("보유 수량", number(position.total_volume, 8))}
+          ${metric("마지막 매도", position.last_sell_at)}
+          ${metric("추가 매도까지", position.cooldown_remaining_hours > 0 ? `${number(position.cooldown_remaining_hours, 1)}h` : "즉시 평가 가능")}
+          ${metric("다음 조건", position.next_rule, `${position.sequence_sell_count}회 체결 후`)}
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>진입시각</th><th>매수가</th><th>수량</th><th>투자원금</th><th>현재평가</th><th>손익률</th><th>목표가</th><th>목표까지</th><th>손절가</th><th>손절까지</th></tr></thead>
+            <thead><tr><th>진입시각</th><th>매수가</th><th>수량</th><th>투자원금</th><th>현재평가</th><th>손익률</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -525,7 +525,7 @@ function renderLog() {
 function renderFooter(market) {
   const settings = market.settings;
   const mode = settings.exit_strategy === "fixed"
-    ? `FIXED +${number(settings.fixed_tp_pct, 1)}% / ${number(settings.fixed_sl_pct, 1)}%`
+    ? `AVG +3% 30% / +6% 60% / +9% ALL · ${number(settings.average_exit_cooldown_hours)}H`
     : "TREND + BB REGIME DISPATCH";
   $("#market-footer").textContent = `${market.ticker} · BUDGET ${number(settings.budget)} KRW · POSITION ${number(settings.position_pct, 1)}% · ${mode} · CACHE ${state.data.cache_ttl_sec}s`;
 }

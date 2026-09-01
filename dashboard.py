@@ -199,6 +199,7 @@ def _build_position(
     market: config.MarketSettings,
     positions: list[dict[str, Any]],
     position: dict[str, Any] | None,
+    status: dict[str, Any],
     current_price: float,
     baseline_volume: float,
     exchange_volume: float,
@@ -207,14 +208,14 @@ def _build_position(
         rows = []
         total_invested = 0.0
         total_volume = 0.0
+        total_entry_cost = 0.0
         for item in positions:
             entry = _finite_float(item.get("entry_price"))
             volume = _finite_float(item.get("remaining_volume"))
             invested = _finite_float(item.get("krw_invested"))
-            target = _finite_float(item.get("target_price"), entry * (1 + market.FIXED_TP_PCT))
-            stop = entry * (1 + market.FIXED_SL_PCT)
             total_invested += invested
             total_volume += volume
+            total_entry_cost += entry * volume
             rows.append({
                 "entry_time": str(item.get("entry_time", "-")),
                 "entry_price": entry,
@@ -222,22 +223,44 @@ def _build_position(
                 "invested": invested,
                 "market_value": volume * current_price,
                 "pnl_pct": (current_price / entry - 1) * 100 if entry and current_price else 0.0,
-                "target_price": target,
-                "target_gap_pct": (target / current_price - 1) * 100 if current_price else 0.0,
-                "stop_price": stop,
-                "stop_gap_pct": (stop / current_price - 1) * 100 if current_price else 0.0,
             })
+        average_entry = total_entry_cost / total_volume if total_volume else 0.0
         market_value = total_volume * current_price
         unrealized = market_value - total_invested
+        sell_count = int(status.get("평단분할매도횟수", 0) or 0)
+        last_sell_at = None
+        cooldown_remaining_hours = 0.0
+        try:
+            raw_last_sell = str(status.get("마지막평단매도시각", ""))
+            if raw_last_sell:
+                parsed = datetime.fromisoformat(raw_last_sell)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=config.KST)
+                last_sell_at = parsed.astimezone(config.KST)
+                cooldown_until = last_sell_at + timedelta(hours=config.AVERAGE_EXIT_COOLDOWN_HOURS)
+                cooldown_remaining_hours = max(
+                    0.0, (cooldown_until - datetime.now(config.KST)).total_seconds() / 3600
+                )
+        except (TypeError, ValueError):
+            pass
         return {
             "mode": "fixed",
             "count": len(rows),
-            "tp_pct": market.FIXED_TP_PCT * 100,
-            "sl_pct": market.FIXED_SL_PCT * 100,
+            "average_entry": average_entry,
+            "current_price": current_price,
+            "total_volume": total_volume,
             "total_invested": total_invested,
             "market_value": market_value,
             "unrealized_pnl": unrealized,
             "unrealized_pnl_pct": unrealized / total_invested * 100 if total_invested else 0.0,
+            "sequence_sell_count": sell_count,
+            "last_sell_at": last_sell_at.strftime("%Y-%m-%d %H:%M") if last_sell_at else "-",
+            "cooldown_remaining_hours": cooldown_remaining_hours,
+            "next_rule": (
+                "+3% 도달 시 30%"
+                if sell_count == 0
+                else "+9% 전량 / +6% 60% / +3% 30%"
+            ),
             "rows": rows,
         }
 
@@ -452,7 +475,9 @@ def _build_dashboard_snapshot() -> dict[str, Any]:
             "ticker": market.TICKER,
             "warnings": market_warnings,
             "kpis": _build_kpis(market, status, position, baseline_volume, exchange_volume, krw_balance, current_price, candles),
-            "position": _build_position(market, positions, position, current_price, baseline_volume, exchange_volume),
+            "position": _build_position(
+                market, positions, position, status, current_price, baseline_volume, exchange_volume
+            ),
             "market_state": _build_market_state(market, candles, current_price),
             "charts": _build_charts(scoped_trades),
             "trades": _trade_records(scoped_trades),
@@ -460,8 +485,7 @@ def _build_dashboard_snapshot() -> dict[str, Any]:
                 "budget": market.BUDGET,
                 "position_pct": market.POSITION_PCT * 100,
                 "exit_strategy": market.EXIT_STRATEGY,
-                "fixed_tp_pct": market.FIXED_TP_PCT * 100,
-                "fixed_sl_pct": market.FIXED_SL_PCT * 100,
+                "average_exit_cooldown_hours": config.AVERAGE_EXIT_COOLDOWN_HOURS,
             },
         })
 

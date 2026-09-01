@@ -43,6 +43,8 @@ class BudgetManager:
             "익절횟수":         0,
             "트레일링매도횟수": 0,
             "추세이탈매도횟수": 0,
+            "평단분할매도횟수": 0,
+            "마지막평단매도시각": "",
             "승률":             0.0,
             "시작일":           datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
             "최종업데이트":     datetime.now(config.KST).strftime("%Y-%m-%d %H:%M"),
@@ -126,6 +128,27 @@ class BudgetManager:
         self.status["최종업데이트"] = datetime.now(config.KST).strftime("%Y-%m-%d %H:%M")
         self._atomic_write_json(self.status_file, self.status)
 
+    def average_exit_state(self) -> tuple[int, Optional[datetime]]:
+        """평단 분할매도 순번과 마지막 실제 체결 시각을 반환한다."""
+        count = int(self.status.get("평단분할매도횟수", 0))
+        raw = self.status.get("마지막평단매도시각", "")
+        if not raw:
+            return count, None
+        try:
+            last_at = datetime.fromisoformat(raw)
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=config.KST)
+            return count, last_at
+        except (TypeError, ValueError):
+            log.error(f"마지막평단매도시각 형식 오류 — 쿨다운을 안전하게 유지합니다: {raw}")
+            return count, datetime.now(config.KST)
+
+    def reset_average_exit_sequence(self):
+        """새 포지션 사이클은 최초 30% 매도부터 시작하되 마지막 쿨다운은 보존한다."""
+        if self.status.get("평단분할매도횟수", 0):
+            self.status["평단분할매도횟수"] = 0
+            self.save_status()
+
     # ── 일일 한도 / 차단 ───────────────────────────
     def daily_loss_limit(self) -> float:
         return -abs(self.settings.BUDGET * self.settings.DAILY_LOSS_LIMIT_PCT)
@@ -183,9 +206,10 @@ class BudgetManager:
         self.status["총거래횟수"] += 1
         self.save_status()
 
-    def record_sell(self, buy_amount: float, sell_amount: float, reason: str):
+    def record_sell(self, buy_amount: float, sell_amount: float, reason: str,
+                    average_exit_full: bool = False):
         """
-        reason: STOP_LOSS / TP1 / TP2 / TRAILING_STOP / TREND_BREAK / TARGET / TIMEOUT
+        reason: STOP_LOSS / TP1 / TP2 / TRAILING_STOP / TREND_BREAK / TARGET / TIMEOUT / AVG_TP_*
         """
         self._reset_daily_if_new_day()
         pnl = sell_amount - buy_amount
@@ -197,7 +221,7 @@ class BudgetManager:
         if reason == "STOP_LOSS":
             self.status["손절횟수"] += 1
             self.status["일일"]["연속손절"] += 1
-        elif reason in ("TP1", "TP2", "TARGET", "FIXED_TP"):
+        elif reason in ("TP1", "TP2", "TARGET", "FIXED_TP") or reason.startswith("AVG_TP_"):
             self.status["익절횟수"] += 1
             self.status["일일"]["연속손절"] = 0
         elif reason == "TRAILING_STOP":
@@ -221,6 +245,13 @@ class BudgetManager:
                 self.status["일일"]["연속손절"] += 1
 
         self.status["일일"]["실현손익"] += pnl
+
+        if reason.startswith("AVG_TP_"):
+            self.status["마지막평단매도시각"] = datetime.now(config.KST).isoformat()
+            if average_exit_full:
+                self.status["평단분할매도횟수"] = 0
+            else:
+                self.status["평단분할매도횟수"] = int(self.status.get("평단분할매도횟수", 0)) + 1
 
         sells = self.status["매도횟수"]
         wins  = self.status["익절횟수"] + self.status["트레일링매도횟수"]
@@ -334,7 +365,7 @@ class BudgetManager:
         mode = self.settings.EXIT_STRATEGY
         if mode == "fixed":
             n_open = len(self.load_positions())
-            mode_label = f"fixed (+{self.settings.FIXED_TP_PCT*100:.1f}% 정액익절, 다중포지션 {n_open}개 보유)"
+            mode_label = f"fixed (평단 3/6/9% 분할익절, 24시간 쿨다운, {n_open}개 보유)"
         else:
             mode_label = "trailing (TP1/TP2/트레일링/손절/추세이탈)"
 

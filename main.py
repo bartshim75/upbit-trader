@@ -73,7 +73,10 @@ def exit_job(budgets: list[BudgetManager]):
 def _log_market_settings(market):
     log.info(f"  [{market.name}] 티커:     {market.TICKER}")
     log.info(f"  [{market.name}] 배정예산: {market.BUDGET:,.0f}원  |  1회 진입: {market.POSITION_PCT*100:.1f}%")
-    log.info(f"  [{market.name}] 익절 목표: +{market.FIXED_TP_PCT*100:.1f}%  |  손절: 없음 (무제한 보유)")
+    if market.EXIT_STRATEGY == "fixed":
+        log.info(f"  [{market.name}] 매도: 평단 +3% 30% / +6% 60% / +9% 전량 | 체결 후 24시간 쿨다운 | 손절 없음")
+    else:
+        log.info(f"  [{market.name}] 매도: TP1/TP2/트레일링/손절/추세이탈")
     log.info(f"  [{market.name}] 상태파일: {market.STATUS_FILE} / {market.POSITIONS_FILE}")
 
 

@@ -158,37 +158,12 @@ def get_buy_signal(df: pd.DataFrame, current_price: float, settings=config) -> d
 # ── 매도 판정 (포지션 strategy_type dispatcher) ────
 
 def evaluate_exit(position: dict, current_price: float, df: pd.DataFrame, settings=config) -> dict:
-    """포지션의 strategy_type에 따라 적합한 exit 로직으로 dispatch.
-    settings.EXIT_STRATEGY=="fixed" 이면 +FIXED_TP_PCT 정액익절 단일 로직만 사용 (다중 포지션 모드)."""
-    if getattr(settings, "EXIT_STRATEGY", "trailing") == "fixed":
-        return _evaluate_exit_fixed(position, current_price, settings)
+    """trailing 모드 포지션의 strategy_type에 따라 적합한 exit 로직으로 dispatch."""
     stype = position.get("strategy_type", "TREND")
     if stype == "BB":
         from mean_revert import evaluate_exit_bb
         return evaluate_exit_bb(position, current_price, df, settings)
     return _evaluate_exit_trend(position, current_price, df, settings)
-
-
-def _evaluate_exit_fixed(position: dict, current_price: float, settings=config) -> dict:
-    """Fixed-TP 모드: 매수가 +FIXED_TP_PCT 도달 시에만 전량 매도. 손절 없음."""
-    entry_price = position["entry_price"]
-    pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
-    target = entry_price * (1 + settings.FIXED_TP_PCT)
-    indicators = {"pnl_pct": pnl_pct, "target": target}
-
-    if current_price >= target:
-        return {
-            "action": "FIXED_TP",
-            "sell_ratio": 1.0,
-            "reason": (f"FIXED_TP +{pnl_pct*100:.2f}% (매수가={entry_price:,.0f} → "
-                       f"현재가={current_price:,.0f} ≥ 목표={target:,.0f})"),
-            "indicators": indicators,
-        }
-
-    return {"action": "HOLD", "sell_ratio": 0.0,
-            "reason": f"보유중 ({pnl_pct*100:+.2f}%, 목표 {target:,.0f})",
-            "indicators": indicators}
-
 
 # ── 추세 매수 신호 (기존 로직, private) ────────────
 
