@@ -35,10 +35,10 @@ jobs:
 
             echo "🔄 대시보드 재시작..."
             if systemctl cat upbit-dashboard 2>/dev/null | grep -q "streamlit run"; then
-              echo "⚠️ 기존 Streamlit 서비스 유지 — VM에서 bash setup.sh를 한 번 실행하면 FastAPI/Nginx로 전환됩니다."
-            else
-              sudo systemctl restart upbit-dashboard || echo "(대시보드 서비스 미등록 — setup.sh 재실행 필요)"
+              echo "🔧 최초 1회 FastAPI/Nginx 서비스 전환..."
+              bash setup.sh
             fi
+            sudo systemctl restart upbit-dashboard
 
             echo "✅ 배포 완료!"
             sudo systemctl status upbit-trader --no-pager
