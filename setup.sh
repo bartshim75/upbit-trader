@@ -65,7 +65,7 @@ User=${USER_NAME}
 WorkingDirectory=${WORK_DIR}
 EnvironmentFile=${WORK_DIR}/.env
 ExecStartPre=+/usr/bin/install -d -o www-data -g www-data /var/www/upbit-trader-dashboard
-ExecStartPre=+/usr/bin/install -m 0644 ${WORK_DIR}/web/index.html ${WORK_DIR}/web/styles.css ${WORK_DIR}/web/app.js /var/www/upbit-trader-dashboard/
+ExecStartPre=+/usr/bin/install -m 0644 ${WORK_DIR}/web/index.html ${WORK_DIR}/web/styles.css ${WORK_DIR}/web/theme.js ${WORK_DIR}/web/app.js /var/www/upbit-trader-dashboard/
 ExecStartPre=+/usr/bin/install -d -o www-data -g www-data /var/www/upbit-trader-dashboard/assets
 ExecStartPre=+/usr/bin/install -m 0644 ${WORK_DIR}/brand-assets/app-icon-upbit-trader.png /var/www/upbit-trader-dashboard/assets/
 ExecStart=${WORK_DIR}/venv/bin/python -m uvicorn dashboard:app --host 127.0.0.1 --port ${DASHBOARD_LISTEN_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1

@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0d0f">
+  <meta name="color-scheme" content="light dark">
+  <meta id="theme-color" name="theme-color" content="#f2f1e9">
   <title>Upbit Trader</title>
   <link rel="icon" href="/assets/app-icon-upbit-trader.png">
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -46,6 +47,11 @@
         <span><strong>UPBIT</strong> TRADER</span>
       </a>
       <div class="topbar-actions">
+        <div id="theme-switcher" class="theme-switcher" role="group" aria-label="화면 테마">
+          <button type="button" data-theme-option="light" title="라이트 테마"><span aria-hidden="true">☀</span><b>라이트</b></button>
+          <button type="button" data-theme-option="dark" title="다크 테마"><span aria-hidden="true">◐</span><b>다크</b></button>
+          <button type="button" data-theme-option="system" title="시스템 테마"><span aria-hidden="true">▣</span><b>시스템</b></button>
+        </div>
         <div class="sync-state">
           <span id="sync-dot" class="sync-dot"></span>
           <span id="last-updated">데이터 준비 중</span>

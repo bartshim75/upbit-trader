@@ -15,6 +15,26 @@ const views = {
   app: $("#app-view"),
 };
 
+function syncThemeButtons() {
+  const preference = window.dashboardTheme?.preference() || "light";
+  document.querySelectorAll("[data-theme-option]").forEach((button) => {
+    const active = button.dataset.themeOption === preference;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+document.querySelectorAll("[data-theme-option]").forEach((button) => {
+  button.addEventListener("click", () => window.dashboardTheme?.apply(button.dataset.themeOption));
+});
+
+window.addEventListener("dashboardthemechange", () => {
+  syncThemeButtons();
+  const market = activeMarket();
+  if (market && !views.app.hidden) renderCharts(market);
+});
+syncThemeButtons();
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -348,6 +368,19 @@ function canvasContext(canvas) {
   return { context, width: rect.width, height: rect.height };
 }
 
+function cssColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function colorWithAlpha(color, alpha) {
+  const hex = color.replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return color;
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 function chartFrame(context, width, height, values) {
   const padding = { top: 12, right: 10, bottom: 27, left: 55 };
   let min = Math.min(0, ...values);
@@ -357,8 +390,8 @@ function chartFrame(context, width, height, values) {
   const plotHeight = height - padding.top - padding.bottom;
   const y = (value) => padding.top + (max - value) / (max - min) * plotHeight;
   context.font = '10px "SFMono-Regular", monospace';
-  context.strokeStyle = "#2a3035";
-  context.fillStyle = "#77848a";
+  context.strokeStyle = cssColor("--line");
+  context.fillStyle = cssColor("--muted");
   context.lineWidth = 1;
   for (let index = 0; index <= 4; index += 1) {
     const value = max - (max - min) * index / 4;
@@ -386,8 +419,9 @@ function drawLineChart(canvas, points) {
   const frame = chartFrame(context, width, height, values);
   const x = (index) => frame.padding.left + (points.length === 1 ? frame.plotWidth / 2 : index / (points.length - 1) * frame.plotWidth);
   const gradient = context.createLinearGradient(0, frame.padding.top, 0, height - frame.padding.bottom);
-  gradient.addColorStop(0, "rgba(201,255,53,.25)");
-  gradient.addColorStop(1, "rgba(201,255,53,0)");
+  const accent = cssColor("--acid");
+  gradient.addColorStop(0, colorWithAlpha(accent, .25));
+  gradient.addColorStop(1, colorWithAlpha(accent, 0));
   context.beginPath();
   points.forEach((point, index) => {
     const px = x(index), py = frame.y(point.value);
@@ -403,10 +437,10 @@ function drawLineChart(canvas, points) {
     const px = x(index), py = frame.y(point.value);
     if (index === 0) context.moveTo(px, py); else context.lineTo(px, py);
   });
-  context.strokeStyle = "#c9ff35";
+  context.strokeStyle = accent;
   context.lineWidth = 2;
   context.stroke();
-  context.fillStyle = "#77848a";
+  context.fillStyle = cssColor("--muted");
   context.fillText(points[0].time.slice(5, 10), frame.padding.left, height - 7);
   context.textAlign = "right";
   context.fillText(points.at(-1).time.slice(5, 10), width - frame.padding.right, height - 7);
@@ -421,10 +455,10 @@ function drawBarChart(canvas, points) {
   const zero = frame.y(0);
   points.forEach((point, index) => {
     const valueY = frame.y(point.value);
-    context.fillStyle = point.value < 0 ? "#ff5f68" : "#64e39a";
+    context.fillStyle = point.value < 0 ? cssColor("--red") : cssColor("--green");
     context.fillRect(frame.padding.left + index * slot + 1, Math.min(valueY, zero), Math.max(1, slot - 2), Math.max(1, Math.abs(zero - valueY)));
   });
-  context.fillStyle = "#77848a";
+  context.fillStyle = cssColor("--muted");
   context.fillText(points[0].date.slice(5), frame.padding.left, height - 7);
   context.textAlign = "right";
   context.fillText(points.at(-1).date.slice(5), width - frame.padding.right, height - 7);
