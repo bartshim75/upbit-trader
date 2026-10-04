@@ -1,4 +1,4 @@
-# 업비트 BTC + DOGE 자동매매 프로그램
+# 업비트 BTC + DOGE + ETH 자동매매 프로그램
 
 **1시간봉 Regime 자동 선택 전략**: 종목별 독립 설정으로 TREND 눌림목 + SIDEWAYS BB 평균회귀 + ATR 기반 리스크 관리
 
@@ -9,9 +9,10 @@
 | 종목 | 기본 활성화 | 상태 파일 | 전략 성격 |
 |------|-------------|-----------|-----------|
 | `KRW-BTC` | 예 | `status.json`, `position.json`*(trailing)* / `positions.json`*(fixed)*, `baseline.json` | 보수적인 장기 추세/눌림목 |
-| `KRW-DOGE` | 예 | `status_KRW_DOGE.json`, `position_KRW_DOGE.json`*(trailing)* / `positions_KRW_DOGE.json`*(fixed)*, `baseline_KRW_DOGE.json` | ETH 대비 최근 90일 상대 추세 우위, 더 빠른 추세 감지 + 넓은 리스크 허용 |
+| `KRW-DOGE` | 예 | `status_KRW_DOGE.json`, `position_KRW_DOGE.json`*(trailing)* / `positions_KRW_DOGE.json`*(fixed)*, `baseline_KRW_DOGE.json` | 상대 추세 우위, 더 빠른 추세 감지 + 넓은 리스크 허용 |
+| `KRW-ETH` | 예 | `status_KRW_ETH.json`, `position_KRW_ETH.json`*(trailing)* / `positions_KRW_ETH.json`*(fixed)*, `baseline_KRW_ETH.json` | 메이저 알트 추세/눌림목, 1회 5만원(예산 100만) 분할매수 |
 
-DOGE를 끄려면 `.env`에 `ENABLE_DOGE=false`를 설정합니다.
+DOGE/ETH를 끄려면 `.env`에 `ENABLE_DOGE=false` 또는 `ENABLE_ETH=false`를 설정합니다.
 
 ## 전략 요약
 
@@ -50,17 +51,15 @@ BTC와 DOGE는 위 구조만 공유하고, MA 기간/RSI/손절/익절/슬리피
 | 쿨다운 중 매수 | 허용 — 신규 매수 후 봇 보유분의 가중평단을 다시 계산 |
 | 매수 중단 | 보유 KRW가 1회 진입 금액보다 작아지면 신규 매수 자동 중단 |
 
-**모드 선택 우선순위**: `BTC_EXIT_STRATEGY` / `DOGE_EXIT_STRATEGY` > `EXIT_STRATEGY` (글로벌 기본값)
+**모드 선택 우선순위**: `BTC_EXIT_STRATEGY` / `DOGE_EXIT_STRATEGY` / `ETH_EXIT_STRATEGY` > `EXIT_STRATEGY` (글로벌 기본값)
 
 ```ini
-# 예시 1) BTC만 평단 분할익절, DOGE는 trailing (기본)
-BTC_EXIT_STRATEGY=fixed
-
-# 예시 2) 둘 다 평단 분할익절
+# 예시 1) 3종목 모두 평단 분할익절
 BTC_EXIT_STRATEGY=fixed
 DOGE_EXIT_STRATEGY=fixed
+ETH_EXIT_STRATEGY=fixed
 
-# 예시 3) 글로벌로 한 번에 fixed 적용 (BTC_/DOGE_ 미설정일 때만 적용)
+# 예시 2) 글로벌로 한 번에 fixed 적용 (개별 설정 미지정 시 자동 상속)
 EXIT_STRATEGY=fixed
 ```
 
@@ -70,7 +69,7 @@ EXIT_STRATEGY=fixed
 
 ### 리스크 관리
 - **사용자 기존 자산 보호 (baseline)**: 봇 첫 실행 시 종목별 거래소 잔고를 각 baseline 파일에 기록. 봇은 이 수량을 절대 매도하지 않음. 봇은 자기가 매수한 수량만 추적/매도함.
-- **포지션 크기**: 1회 진입 = 종목별 유효예산 × `POSITION_PCT` (DOGE는 `DOGE_POSITION_PCT`)
+- **포지션 크기**: 1회 진입 = 종목별 유효예산 × `POSITION_PCT` (DOGE는 `DOGE_POSITION_PCT`, ETH는 `ETH_POSITION_PCT`)
 - **일일 손실 한도**: 종목별 배정예산 기준 손실 한도 도달 시 해당 종목 신규 매수 차단
 - **연속 손절**: 종목별 연속 손절 한도 도달 시 해당 종목 신규 매수 차단
 - **변동성 차단**: 직전 1H봉 변동폭이 ATR × 3 이상이면 사이클 스킵

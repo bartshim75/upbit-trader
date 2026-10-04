@@ -3,9 +3,10 @@
 
 # 거래 기록 / 상태 파일 (로컬 보관)
 trades.csv
-status.json
-position.json
-baseline.json
+status*.json
+position*.json
+positions*.json
+baseline*.json
 trader.log
 
 # Python

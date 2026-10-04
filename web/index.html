@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="ko">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,6 +12,7 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
+
 <body>
   <div class="grain" aria-hidden="true"></div>
 
@@ -21,8 +23,8 @@
         <span>PRIVATE TERMINAL</span>
       </div>
       <p class="eyebrow">UPBIT / OPERATIONS</p>
-      <h1 id="login-title">시장에 들어가기 전,<br>신원을 확인합니다.</h1>
-      <p class="login-copy">자동매매 상태와 계좌 정보가 포함된 보호된 대시보드입니다.</p>
+      <h1 id="login-title">대시보드에 들어가기 전,<br>접속 권한을 확인합니다.</h1>
+      <p class="login-copy">비밀번호를 입력해주세요.</p>
       <form id="login-form" autocomplete="on">
         <label for="password">대시보드 비밀번호</label>
         <div class="password-row">
@@ -48,9 +50,12 @@
       </a>
       <div class="topbar-actions">
         <div id="theme-switcher" class="theme-switcher" role="group" aria-label="화면 테마">
-          <button type="button" data-theme-option="light" title="라이트 테마"><span aria-hidden="true">☀</span><b>라이트</b></button>
-          <button type="button" data-theme-option="dark" title="다크 테마"><span aria-hidden="true">◐</span><b>다크</b></button>
-          <button type="button" data-theme-option="system" title="시스템 테마"><span aria-hidden="true">▣</span><b>시스템</b></button>
+          <button type="button" data-theme-option="light" title="라이트 테마"><span
+              aria-hidden="true">☀</span><b>라이트</b></button>
+          <button type="button" data-theme-option="dark" title="다크 테마"><span
+              aria-hidden="true">◐</span><b>다크</b></button>
+          <button type="button" data-theme-option="system" title="시스템 테마"><span
+              aria-hidden="true">▣</span><b>시스템</b></button>
         </div>
         <div class="sync-state">
           <span id="sync-dot" class="sync-dot"></span>
@@ -78,4 +83,5 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
+
 </html>
